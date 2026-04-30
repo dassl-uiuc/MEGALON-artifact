@@ -1,0 +1,12 @@
+diff --git a/hostrpc/detail/server_impl.hpp b/hostrpc/detail/server_impl.hpp
+index 2dcd62c..883894d 100644
+--- a/hostrpc/detail/server_impl.hpp
++++ b/hostrpc/detail/server_impl.hpp
+@@ -28,6 +28,7 @@ HOSTRPC_ANNOTATE bool rpc_handle(server<BufferElementT, WordT, SZT>* server,
+       server->rpc_try_open_partial_port(active_threads, *location_arg);
+   if (maybe_port)  // else do nothing, result initialised to false
+     {
++      result = true;
+       auto pport = maybe_port.value();
+       constexpr bool OutboxGuess = false;
+       if (pport.outbox_state() == OutboxGuess)

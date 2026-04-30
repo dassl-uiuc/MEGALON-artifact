@@ -1,0 +1,31 @@
+[submodule "third-party/robin-map"]
+	path = third-party/robin-map
+	url = https://github.com/Tessil/robin-map.git
+	branch = master
+[submodule "third-party/unordered_dense"]
+	path = third-party/unordered_dense
+	url = https://github.com/martinus/unordered_dense.git
+	branch = main
+[submodule "third-party/machnet"]
+	path = third-party/machnet
+	url = https://github.com/microsoft/machnet.git
+	branch = main
+[submodule "third-party/capnproto"]
+	path = third-party/capnproto
+	url = https://github.com/capnproto/capnproto.git
+	branch = release-1.0.1.1
+[submodule "third-party/abseil-cpp"]
+	path = third-party/abseil-cpp
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "third-party/hostrpc"]
+	path = third-party/hostrpc
+	url = https://github.com/JonChesterfield/hostrpc.git
+[submodule "third-party/oneTBB"]
+	path = third-party/oneTBB
+	url = https://github.com/oneapi-src/oneTBB.git
+[submodule "third-party/gtl"]
+	path = third-party/gtl
+	url = https://github.com/greg7mdp/gtl.git
+[submodule "third-party/yaml-cpp"]
+	path = third-party/yaml-cpp
+	url = git@github.com:jbeder/yaml-cpp.git

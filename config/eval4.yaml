@@ -1,0 +1,22 @@
+server_id: 0
+mount_directory: /mydata
+id: 0
+host_address: localhost:50051
+slots: 7201000
+key_space: 7200000
+move_to_share: false
+scr_size: 4GB
+logical_scr_size: 512MB
+ncr_size: 36GB
+local_size: 32GB
+replicate: false
+flush: false
+evict: false
+base_address: 0x6e0000000000
+excluded_files:
+excluded_directories:
+  - /usr
+  - /proc
+  - /etc
+  - /dev
+  - /sys
