@@ -1,4 +1,3 @@
-// benchmark_tigon_timing.cpp
 #include <fcntl.h>
 #include <numa.h>
 #include <rackobj.h>
@@ -235,6 +234,8 @@ static void workload(AccessPattern* ap, const std::string& latency_filename, con
         if (cooldown_local) continue;
     }
 
+    close(fd);
+
     // flush any remaining local_ops to global counter
     if (local_ops > 0) local_ctr->ops.fetch_add(local_ops, std::memory_order_relaxed);
 
@@ -318,16 +319,16 @@ int main(int argc, char** argv) {
 
     string dir = result_dir;
     if (pattern == "hotcachepartial") {
-        dir += "tigon/" + pattern + "-" + argv[4] + std::to_string(shared_ratio);
+        dir += "hcmeta-page-cache/" + pattern + "-" + argv[4] + std::to_string(shared_ratio);
     } else if (pattern == "zipfian") {
         std::ostringstream oss;
         oss << std::fixed << std::setprecision(6) << shared_ratio;
         std::string sr_str = oss.str();
         sr_str.erase(sr_str.find_last_not_of('0') + 1, std::string::npos);
         if (!sr_str.empty() && sr_str.back() == '.') sr_str.pop_back();
-        dir += "tigon/" + pattern + "-" + sr_str + "-" + argv[4];
+        dir += "hcmeta-page-cache/" + pattern + "-" + sr_str + "-" + argv[4];
     } else {
-        dir += "tigon/" + pattern + "-" + argv[4];
+        dir += "hcmeta-page-cache/" + pattern + "-" + argv[4];
     }
     struct stat st = {0};
     if (stat(dir.c_str(), &st) == -1) {
@@ -401,15 +402,18 @@ int main(int argc, char** argv) {
                 // Calculate how many threads are on the same NUMA node
                 size_t threads_per_numa = num_threads / num_logical_node;
                 size_t local_thread_idx = thread_idx / num_logical_node;
+                size_t rid = thread_idx % num_logical_node;
+                size_t start_idx = rid + local_thread_idx * num_logical_node;
+                size_t stride = threads_per_numa * num_logical_node;
 
                 int fd = open("/KV_STORE", O_RDWR);
-                for (size_t i = local_thread_idx; i < operation_count; i += threads_per_numa) {
+                for (size_t i = start_idx; i < operation_count; i += stride) {
                     rc = pwrite(fd, reinterpret_cast<uint8_t*>(buf), ACCESS_SIZE, warmup_sequence[i]);
                     PCHECK(rc != -1);
                 }
 
                 warmup_barrier.Wait();
-                rackobj::UnRegister();
+                close(fd);
             });
         }
     }
@@ -528,7 +532,6 @@ int main(int argc, char** argv) {
                      &thread_counters[i], i);
 
             barrier.Wait();
-            rackobj::UnRegister();
         });
     }
 

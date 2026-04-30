@@ -12,6 +12,13 @@
 #define PARTITION_STRATEGY PARTITION_RANGE
 #endif
 
+#ifdef FILE_INTERFACE
+#define PARTITION_STRATEGY PARTITION_HASH
+#define NORMALIZE_OFFSET(offset) (offset / SLOT_SIZE)
+#else
+#define NORMALIZE_OFFSET(offset) offset
+#endif
+
 // Function declarations
 uint8_t partition_hash(off_t key);
 uint8_t partition_range(off_t key);
@@ -24,7 +31,7 @@ bool is_my_key(off_t key, int my_logical_node);
  * @param key The key to use the partition strategy on
  * @return The partition (NUMA node [1-3]) that owns the @p key
  */
-uint8_t partition_hash(off_t key) { return static_cast<uint8_t>(key % LOGICAL_NODE_NUM); }
+uint8_t partition_hash(off_t key) { return static_cast<uint8_t>(NORMALIZE_OFFSET(key) % LOGICAL_NODE_NUM); }
 
 /**
  * @brief Partitions the key space using a range partition

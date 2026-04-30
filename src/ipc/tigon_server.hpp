@@ -157,10 +157,10 @@ protected:
         (void)payload_buffer_len;
         switch (opcode) {
             case TigonIPCOp::RequestShareCreate:
-                handleRequestShare((off_t)payload[0], response, response_buffer_len);
+                handleRequestShare((ino_t)payload[0], (off_t)payload[1], response, response_buffer_len);
                 break;
             case TigonIPCOp::RequestShareGet:
-                handleRequestShareGet((off_t)payload[0], response, response_buffer_len);
+                handleRequestShareGet((ino_t)payload[0], (off_t)payload[1], response, response_buffer_len);
                 break;
             default:
                 LOG(FATAL) << "unrecognized ipc opcode " << opcode << " at node " << logical_exec_node_;
@@ -168,10 +168,10 @@ protected:
     }
 
 private:
-    void handleRequestShare(off_t key, uint64_t* response, size_t response_buffer_len) {
+    void handleRequestShare(ino_t inode, off_t key, uint64_t* response, size_t response_buffer_len) {
         (void)response_buffer_len;
         // 3. Use some function to share the key
-        BlockId block(logical_exec_node_, 0, key);
+        BlockId block(logical_exec_node_, inode, key);
         // Move partitioned page to shared and get indices
         auto [new_wmeta_idx, cn_idx] = pg_cache->PartitionToShared(block, logical_exec_node_);
         //* 4. Mark IPC as completed in response buffer
@@ -179,10 +179,10 @@ private:
         response[1] = cn_idx;
     }
 
-    void handleRequestShareGet(off_t key, uint64_t* response, size_t response_buffer_len) {
+    void handleRequestShareGet(ino_t inode, off_t key, uint64_t* response, size_t response_buffer_len) {
         (void)response_buffer_len;
         // 3. Use some function to share the key
-        BlockId block(logical_exec_node_, 0, key);
+        BlockId block(logical_exec_node_, inode, key);
         // Move partitioned page to shared and get indices
         auto [new_wmeta_idx, cn_idx] = pg_cache->PartitionToSharedGet(block, logical_exec_node_);
         //* 4. Mark IPC as completed in response buffer

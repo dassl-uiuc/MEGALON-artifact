@@ -110,8 +110,5 @@ int close(int fd) {
 
     int result = fp->Close();
     EraseFilePointer(fp.get());
-#ifdef NR
-    UnRegisterNRThread();
-#endif
     return result;
 }

@@ -203,22 +203,6 @@ size_t SharedMemoryObjectHandle<Policy>::CopyFromUserBufferLocal(const WriteHand
     return 0;
 }
 
-#ifdef NR
-template <typename Policy>
-const NrFfi::NrMeta *SharedMemoryObjectHandle<Policy>::RegisterNRThread() {
-    std::thread::id tid = std::this_thread::get_id();
-    DLOG(INFO) << "register nr thread local, tid: " << tid;
-    return c3po_->Gcd()->GetNrMetaTid(true);
-}
-
-template <typename Policy>
-void SharedMemoryObjectHandle<Policy>::UnRegisterNRThread(const NrFfi::NrMeta *nr_meta) {
-    std::thread::id tid = std::this_thread::get_id();
-    DLOG(INFO) << "unregister nr thread local, tid: " << tid;
-    c3po_->Gcd()->UnRegisterThread(nr_meta, true);
-}
-#endif
-
 [[maybe_unused]] static inline bool shouldReplicate(const uint8_t *ptr) {
 #ifdef BTREE_REPLICATE
     uint8_t node_type = ptr[0];
@@ -237,236 +221,6 @@ common::LocalMemoryObject<Policy> *SharedMemoryObjectHandle<Policy>::RegisterLoc
     return cache_lcl_ptr_[numa].get();
 }
 
-/* Admit to CXL first */
-template <typename Policy>
-expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>::Admit(
-    const common::BlockId &block_id, ThreadLocalMeta<Policy> *local_meta) {
-    expected<common::CacheNode *, std::error_code> new_node_result;
-    size_t new_index;
-    common::CacheNode *new_node;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#endif
-
-    // LOG(INFO) << "cache miss";
-    /* 1. Wait for free page available in free list */
-    /* 2. free list remove cn */
-    std::optional<size_t> new_cn_index_optional = cache_shrd_ptr_->scr_bitmap_.ReserveCacheNode();
-    if (!new_cn_index_optional.has_value()) return unexpected(std::make_error_code(std::errc::not_enough_memory));
-    new_index = new_cn_index_optional.value();
-
-    CHECK(new_index < cache_shrd_ptr_->Size())
-        << "Invalid cn_index: " << new_index << " cache size: " << cache_shrd_ptr_->Size();
-
-    DLOG(INFO) << "Admit: Reserved @" << new_index << " from SharedBitmap"
-               << "  ,block_id: " << block_id;
-
-    new_node = cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index);
-
-    /* 6. Fetch Content */
-    if (local_meta->file_backed_) {
-        ssize_t result = original_syscalls.pread(static_cast<int>(block_id.GetServerId()),
-                                                 reinterpret_cast<char *>(cache_shrd_ptr_->GetPage(new_index)),
-                                                 static_cast<size_t>(SLOT_SIZE), block_id.GetOffset());
-        if (result > 0) {
-            new_node->SetLength(static_cast<size_t>(result));
-        } else {
-            LOG(FATAL) << "Error: " << std::strerror(errno) << " attempting to read non existent block " << block_id;
-        }
-    }
-
-    // 7. cn set blockid
-    new_node->Reinitialize(block_id);
-    cache_shrd_ptr_->scr_bitmap_.SetDirty(new_index, false);
-#ifndef FULL_COHERENCE
-    c3po_->cache_flush(reinterpret_cast<char *>(cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index)),
-                       sizeof(common::CacheNode));
-#endif
-
-    /* 9. CheckInsert GCD */
-#ifdef DYN_WMETA
-    common::NrGcdError error = c3po_->Gcd()->CheckAndInsert(block_id, new_index, shared_cache_node_
-#ifdef NR
-                                                            ,
-                                                            nr_meta
-#endif
-    );
-#else
-    std::optional<size_t> new_wmeta_index_optional = new_index;
-    common::NrGcdError error = c3po_->Gcd()->CheckAndInsert(block_id, new_index, shared_cache_node_
-#ifdef NR
-                                                            ,
-                                                            nr_meta
-#endif
-                                                            ,
-                                                            new_wmeta_index_optional);
-#endif
-
-    // RecycleCacheNode if CheckAndInsert fails
-    switch (error) {
-        case common::NrGcdError::GCD_NO_ERROR:
-            local_meta->pt_stat.admit_cnt++;
-            break;
-        case common::NrGcdError::GCD_SLOT_WMETA_UPDATE_FAILED:
-            // free allocated wmeta
-        case common::NrGcdError::GCD_SLOT_UPDATE_FAILED:
-            DLOG(WARNING) << "Admit: GCD page @" << new_node << " checkinsert failed: concurrent insertion to node "
-                          << shared_cache_node_ << " ,block_id: " << block_id;
-
-            /* 10. free list insert cn */
-            cache_shrd_ptr_->scr_bitmap_.RecycleCacheNode(new_index);
-            // std::optional<common::GCDEntry> entry_optional = c3po_->Gcd()->Get(block_id, nr_meta);
-            // print_entry(&(*entry_optional));
-            new_node_result = unexpected(std::make_error_code(std::errc::resource_unavailable_try_again));
-            goto failed;
-        default:
-    }
-    evict_mgr_[static_cast<int>(GetCurrentNuma())]->insert_shared(new_index);
-
-    /* TODO: Write Log Commit */
-    new_node_result = new_node;
-failed:
-    return new_node_result;
-}
-
-/**
- * Admit to CXL first
- * different from admit to CXL, initialize page in rw shared
- * input: const uint8_t* write_data
- *     optimization for special case when full-page aligned page is written
- *     no need to bring page from disk cuz anyway overwritten
- *     but we cannot allow read to happen after admit before the write (garbage read)
- *     Solution: directly memcpy write data in admission
- *     if write_data != nullptr indicates full-page aligned write*/
-template <typename Policy>
-expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>::AdmitWrite(
-    const common::BlockId &block_id, const uint8_t *write_data, ThreadLocalMeta<Policy> *local_meta) {
-    expected<common::CacheNode *, std::error_code> new_node_result;
-    std::optional<size_t> new_wmeta_index_optional = std::nullopt;
-    size_t new_index;
-    common::CacheNode *new_node;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#else
-    (void)local_meta;
-#endif
-
-    /* 1. Wait for free page available in free list */
-    std::optional<size_t> new_cn_index_optional = cache_shrd_ptr_->scr_bitmap_.ReserveCacheNode();
-    if (!new_cn_index_optional.has_value()) return unexpected(std::make_error_code(std::errc::not_enough_memory));
-    new_index = new_cn_index_optional.value();
-
-    CHECK(new_index < cache_shrd_ptr_->Size())
-        << "Invalid cn_index: " << new_index << " cache size: " << cache_shrd_ptr_->Size();
-
-    DLOG(INFO) << "Admit: Reserved @" << new_index << " from SharedBitmap"
-               << "  ,block_id: " << block_id;
-
-    new_node = cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index);
-
-#ifdef DYN_WMETA
-    do {
-        // new_wmeta_index_optional = c3po_->Scr_meta()->ReserveWmeta(block_id, true, new_wmeta_index_optional);
-        // new_wmeta_index_optional =
-        //     c3po_->Scr_meta()->ReserveWmetaEarlyTerm(block_id, 100, true, new_wmeta_index_optional);
-        new_wmeta_index_optional =
-            c3po_->Scr_meta()->CheckReserveWmeta(block_id, PLACEHOLDER_0, true, new_wmeta_index_optional);
-        if (new_wmeta_index_optional.has_value()) break;
-
-        // critical path reclamation
-        new_wmeta_index_optional = c3po_->Scr_meta()->SampleVictim(5, PLACEHOLDER_0);
-        if (!new_wmeta_index_optional.has_value()) continue;
-
-        common::WriteMetadata *cur = c3po_->Scr_meta()->GetWmeta(new_wmeta_index_optional.value());
-        common::BlockId vic_block_id = cur->GetBlockID();
-
-        new_wmeta_index_optional = c3po_->Gcd()->SwitchToReadOnly(vic_block_id
-#ifdef NR
-                                                                  ,
-                                                                  nr_meta
-#endif /* NR */
-        );
-        if (new_wmeta_index_optional.has_value()) {
-            c3po_->Scr_meta()->RecycleWmeta(new_wmeta_index_optional.value(), PLACEHOLDER_0);
-        } else {
-            cur->WUnlockOnly();
-        }
-
-        cpu_relax();
-    } while (true);
-#else
-    new_wmeta_index_optional = new_index;
-    c3po_->Scr_meta()->GetWmeta(new_index)->WSeqBegin();
-#endif
-
-    size_t slot_size = static_cast<size_t>(SLOT_SIZE);
-    /* 6. Fetch Content */
-    if (write_data) {
-        memcpy(static_cast<void *>(cache_shrd_ptr_->GetPage(new_index)), write_data, slot_size);
-#ifndef FULL_COHERENCE
-        c3po_->cache_flush(reinterpret_cast<char *>(cache_shrd_ptr_->GetPage(new_index)), slot_size);
-#endif
-        new_node->SetLength(slot_size);
-        DLOG(INFO) << "admit write wout fetch block";
-    } else {
-        if (local_meta->file_backed_) {
-            ssize_t result = original_syscalls.pread(static_cast<int>(block_id.GetServerId()),
-                                                     reinterpret_cast<char *>(cache_shrd_ptr_->GetPage(new_index)),
-                                                     slot_size, block_id.GetOffset());
-            if (result > 0) {
-                new_node->SetLength(static_cast<size_t>(result));
-            } else {
-                LOG(ERROR) << "Error: " << std::strerror(errno) << " attempting to read non existent block "
-                           << block_id;
-            }
-            DLOG(INFO) << "admit write fetch block from disk";
-        }
-    }
-
-    // 7. cn set valid & clean
-    new_node->Reinitialize(block_id);
-    cache_shrd_ptr_->scr_bitmap_.SetDirty(new_index, write_data != nullptr);
-#ifndef FULL_COHERENCE
-    c3po_->cache_flush(reinterpret_cast<char *>(cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index)),
-                       sizeof(common::CacheNode));
-#endif
-
-    /* 8. CheckInsert GCD */
-#ifdef NR
-    common::NrGcdError error =
-        c3po_->Gcd()->CheckAndInsert(block_id, new_index, shared_cache_node_, nr_meta, new_wmeta_index_optional);
-#else
-    common::NrGcdError error =
-        c3po_->Gcd()->CheckAndInsert(block_id, new_index, shared_cache_node_, new_wmeta_index_optional);
-#endif
-
-    // RecycleCacheNode if CheckAndInsert fails
-    switch (error) {
-        case common::NrGcdError::GCD_NO_ERROR:
-            break;
-        case common::NrGcdError::GCD_SLOT_WMETA_UPDATE_FAILED:
-            c3po_->Scr_meta()->RecycleWmeta(new_wmeta_index_optional.value(), PLACEHOLDER_0, true);
-        case common::NrGcdError::GCD_SLOT_UPDATE_FAILED:
-            DLOG(WARNING) << "Admit: GCD page @" << new_node << " checkinsert failed: concurrent insertion to node "
-                          << shared_cache_node_ << " ,block_id: " << block_id;
-
-            /* 10. free list insert cn */
-            c3po_->Scr_meta()->RecycleWmeta(new_wmeta_index_optional.value(), PLACEHOLDER_0, true);
-            cache_shrd_ptr_->scr_bitmap_.SetDirty(new_index, false);
-            cache_shrd_ptr_->scr_bitmap_.RecycleCacheNode(new_index);
-            // std::optional<common::GCDEntry> entry_optional = c3po_->Gcd()->Get(block_id, nr_meta);
-            // print_entry(&(*entry_optional));
-            new_node_result = unexpected(std::make_error_code(std::errc::resource_unavailable_try_again));
-            goto failed;
-        default:
-    }
-
-    c3po_->Scr_meta()->GetWmeta(new_wmeta_index_optional.value())->WSeqEnd();
-    new_node_result = new_node;
-failed:
-    return new_node_result;
-}
-
 /** KV-Store functions */
 template <typename Policy>
 expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>::CreatePage(
@@ -475,11 +229,7 @@ expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>:
     std::optional<size_t> new_wmeta_index_optional = std::nullopt;
     size_t new_index;
     common::CacheNode *new_node;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#else
     (void)local_meta;
-#endif
 
     /* 1. Wait for free page available in free list */
     std::optional<size_t> new_cn_index_optional = cache_shrd_ptr_->scr_bitmap_.ReserveCacheNode();
@@ -507,12 +257,7 @@ expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>:
         common::WriteMetadata *cur = c3po_->Scr_meta()->GetWmeta(new_wmeta_index_optional.value());
         common::BlockId vic_block_id = cur->GetBlockID();
 
-        new_wmeta_index_optional = c3po_->Gcd()->SwitchToReadOnly(vic_block_id
-#ifdef NR
-                                                                  ,
-                                                                  nr_meta
-#endif /* NR */
-        );
+        new_wmeta_index_optional = c3po_->Gcd()->SwitchToReadOnly(vic_block_id);
         if (new_wmeta_index_optional.has_value()) {
             c3po_->Scr_meta()->RecycleWmeta(new_wmeta_index_optional.value(), PLACEHOLDER_0);
         } else {
@@ -546,13 +291,8 @@ expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>:
 #endif
 
     /* 8. CheckInsert GCD */
-#ifdef NR
-    common::NrGcdError error =
-        c3po_->Gcd()->CheckAndInsert(block_id, new_index, shared_cache_node_, nr_meta, new_wmeta_index_optional);
-#else
     common::NrGcdError error =
         c3po_->Gcd()->CheckAndInsert(block_id, new_index, shared_cache_node_, new_wmeta_index_optional);
-#endif
 
     // RecycleCacheNode if CheckAndInsert fails
     switch (error) {
@@ -662,9 +402,6 @@ template <typename Policy>
 std::error_code SharedMemoryObjectHandle<Policy>::SwitchRW(const common::WriteHandle &wh,
                                                            ThreadLocalMeta<Policy> *local_meta) {
     std::optional<size_t> new_wmeta_index_optional = std::nullopt;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#endif
 #ifdef DYN_WMETA
     do {
         // new_wmeta_index_optional = c3po_->Scr_meta()->ReserveWmeta(wh.key, true, new_wmeta_index_optional);
@@ -681,12 +418,7 @@ std::error_code SharedMemoryObjectHandle<Policy>::SwitchRW(const common::WriteHa
         common::WriteMetadata *cur = c3po_->Scr_meta()->GetWmeta(new_wmeta_index_optional.value());
         common::BlockId vic_block_id = cur->GetBlockID();
 
-        new_wmeta_index_optional = c3po_->Gcd()->SwitchToReadOnly(vic_block_id
-#ifdef NR
-                                                                  ,
-                                                                  nr_meta
-#endif /* NR */
-        );
+        new_wmeta_index_optional = c3po_->Gcd()->SwitchToReadOnly(vic_block_id);
         if (new_wmeta_index_optional.has_value()) {
             c3po_->Scr_meta()->RecycleWmeta(new_wmeta_index_optional.value(), PLACEHOLDER_0);
         } else {
@@ -699,12 +431,8 @@ std::error_code SharedMemoryObjectHandle<Policy>::SwitchRW(const common::WriteHa
     new_wmeta_index_optional = wh.cn_index;
 #endif
 
-#ifdef NR
-    size_t rc = c3po_->Gcd()->InvalidateSwitchToRWShared(wh.key, new_wmeta_index_optional.value(), nr_meta);
-#else
     (void)local_meta;
     size_t rc = c3po_->Gcd()->InvalidateSwitchToRWShared(wh.key, new_wmeta_index_optional.value());
-#endif
 
     if (rc == common::NrGcdError::GCD_SLOT_WMETA_UPDATE_FAILED) {
         c3po_->Scr_meta()->RecycleWmeta(new_wmeta_index_optional.value(), PLACEHOLDER_0, true);
@@ -737,11 +465,7 @@ expected<size_t, ReadErrno> SharedMemoryObjectHandle<Policy>::ReadFromLocal(stru
                                                                             size_t count, size_t offset_into_page,
                                                                             ThreadLocalMeta<Policy> *local_meta) {
     size_t bytes_read = 0;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#else
     (void)local_meta;
-#endif
     DLOG(INFO) << "Cache hit: GCD get succeed, Accessing CXL page!";
 
     /* read seq begin */
@@ -781,11 +505,7 @@ expected<size_t, ReadErrno> SharedMemoryObjectHandle<Policy>::ReadFromCXL(struct
                                                                           size_t count, size_t offset_into_page,
                                                                           ThreadLocalMeta<Policy> *local_meta) {
     size_t bytes_read = 0;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#else
     (void)local_meta;
-#endif
     DLOG(INFO) << "Cache hit: GCD get succeed, Accessing CXL page!";
 
     bool from_cxl_tmp = rh.from_cxl;
@@ -841,11 +561,7 @@ expected<size_t, WriteErrno> SharedMemoryObjectHandle<Policy>::WriteToCXL(struct
                                                                           size_t count, size_t offset_into_page,
                                                                           ThreadLocalMeta<Policy> *local_meta) {
     size_t bytes_write = 0;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#else
     (void)local_meta;
-#endif
 
     bool from_cxl_tmp = wh.from_cxl;
     wh.from_cxl = true;  // need to set this temporality to aviod sanity checks
@@ -883,15 +599,14 @@ size_t SharedMemoryObjectHandle<Policy>::Read(const common::BlockId &block_id, u
     struct ReadHandle rh;
     std::optional<common::GCDEntry> entry_optional;
     uint64_t admit_retry_cnt = 0;
-    uint64_t coherence_retry_cnt[NUM_NUMA] = {
-        0,
-    };  // for retry on coherence failure
+    uint64_t coherence_retry_cnt[LOGICAL_NODE_NUM] = {0};  // for retry on coherence failure
     uint64_t c_retry = 0;
     bool did_retry = false;
+    uint8_t partition_num = whose_key(block_id.GetOffset());
+    uint8_t my_partition = static_cast<uint8_t>(local_meta->logical_node_id_);
+    bool move_to_share = cfg_.GetMoveToShare();
+
     local_meta->pt_stat.read_cnt++;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#endif
     if (offset_into_page + count > common::BlockId::kBlockSize) {
         LOG(FATAL) << "SharedMemoryObjectHandle::Read attempting to read " << count << " bytes at an offset of "
                    << offset_into_page << " into the page (exceeds page limit)";
@@ -900,36 +615,133 @@ size_t SharedMemoryObjectHandle<Policy>::Read(const common::BlockId &block_id, u
 retry:
     size_t bytes_read = 0;
 
-    entry_optional = c3po_->Gcd()->GetAnchor(block_id
-#ifdef NR
-                                             ,
-                                             nr_meta
-#endif
-    );
+    init_read_handle(rh, block_id, my_partition);
 
-    init_read_handle(rh, block_id, static_cast<uint8_t>(local_meta->logical_node_id_));
-    update_read_handle(rh, block_id, entry_optional);
+    if (partition_num == my_partition) {
+        // Owned partition: check local cache directory
+        auto lcd_entry_opt = lcds_[partition_num]->Get(block_id);
+
+        if (!lcd_entry_opt.has_value()) {
+            DLOG(INFO) << "Cache miss: LCD entry not found, ADMIT new page!";
+            if (move_to_share) {
+                std::shared_ptr<rackobj::common::LocalMemoryObject<Policy>> my_memory = cache_lcl_ptr_[my_partition];
+                common::LocalCacheNode *new_node = my_memory->policy_.ReserveCacheNode();
+                CHECK(new_node != nullptr)
+                    << "(Ran out of memory?) reserving local index on partition " << my_partition << " with read";
+
+                if (local_meta->file_backed_) {
+                    size_t slot_size = static_cast<size_t>(SLOT_SIZE);
+                    ssize_t result = original_syscalls.pread(static_cast<int>(block_id.GetServerId()),
+                                                             reinterpret_cast<char *>(new_node->page_ptr_), slot_size,
+                                                             block_id.GetOffset());
+                    if (result <= 0) {
+                        LOG(ERROR) << "Error reading from disk: " << std::strerror(errno);
+                    }
+                }
+
+                lcds_[partition_num]->Insert(block_id, reinterpret_cast<size_t>(new_node));
+                admit_retry_cnt++;
+                goto retry;
+            } else {
+                size_t new_index;
+                common::CacheNode *new_node;
+                std::optional<size_t> new_cn_index_optional = cache_shrd_ptr_->scr_bitmap_.ReserveCacheNode();
+                CHECK(new_cn_index_optional.has_value())
+                    << "(Ran out of memory?) inserting to local index on partition " << my_partition << " with read";
+
+                new_index = new_cn_index_optional.value();
+                CHECK(new_index < cache_shrd_ptr_->Size())
+                    << "Invalid cn_index: " << new_index << " cache size: " << cache_shrd_ptr_->Size();
+
+                new_node = cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index);
+
+                if (local_meta->file_backed_) {
+                    size_t slot_size = static_cast<size_t>(SLOT_SIZE);
+                    ssize_t result = original_syscalls.pread(
+                        static_cast<int>(block_id.GetServerId()),
+                        reinterpret_cast<char *>(cache_shrd_ptr_->page_data_.GetPage(new_index)), slot_size,
+                        block_id.GetOffset());
+                    if (result > 0) {
+                        new_node->SetLength(static_cast<size_t>(result));
+                    } else {
+                        LOG(ERROR) << "Error reading from disk: " << std::strerror(errno);
+                    }
+                }
+
+                size_t slot_size = static_cast<size_t>(SLOT_SIZE);
+                new_node->SetLength(slot_size);
+                new_node->Reinitialize(block_id);
+                cache_shrd_ptr_->scr_bitmap_.SetDirty(new_index, 0);
+
+                c3po_->write_flush(reinterpret_cast<char *>(cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index)),
+                                   sizeof(common::CacheNode));
+
+                auto result = lcds_[my_partition]->Insert(block_id, new_index);
+                CHECK(result) << "insert to local index failed on node " << my_partition;
+
+                admit_retry_cnt++;
+                goto retry;
+            }
+        }
+
+        common::LCDEntry &lmeta = lcd_entry_opt->get();
+        if (!lmeta.wmeta_idx_.has_value()) {
+            // Local exclusive: not shared
+            update_read_handle(rh, block_id, lmeta);
+            rh.cn_index = lmeta.cn_idx_.value();
+        } else {
+            // Shared: entry has wmeta_idx
+            rh.entry_optional = common::GCDEntry{.wmeta_idx_ = lmeta.wmeta_idx_.value(), .cn_array_ = {}};
+            if (cfg_.GetMoveToShare()) {
+                rh.cn_index = lmeta.wmeta_idx_.value();
+            } else {
+                rh.cn_index = lmeta.cn_idx_.value();
+            }
+        }
+    } else {
+        // Remote partition: check global cache directory
+        entry_optional = c3po_->Gcd()->GetAnchor(block_id);
+        update_read_handle(rh, block_id, entry_optional);
+
+        if (c3po_->IsEntryEmpty(rh.entry_optional)) {
+            // Entry not in GCD: request share from owning partition via IPC
+            std::shared_ptr<rackobj::common::TigonIPCClient> client_to_remote_node =
+                ipc_clients[my_partition][partition_num];
+
+            // Serialize inode and key offset
+            auto serialize = [block_id](uint64_t *data) {
+                data[0] = static_cast<uint64_t>(block_id.GetInode());
+                data[1] = static_cast<uint64_t>(block_id.GetOffset());
+            };
+
+            // Deserialize wmeta_idx and cn_idx
+            size_t wmeta_idx, cn_idx;
+            auto deserialize = [&wmeta_idx, &cn_idx](const uint64_t *data) {
+                wmeta_idx = data[0];
+                cn_idx = data[1];
+            };
+
+            // Send IPC request to remote partition
+            (void)client_to_remote_node->Call<uint64_t>(rackobj::common::TigonIPCOp::RequestShareGet, serialize,
+                                                        deserialize);
+
+            if (wmeta_idx == 0 && cn_idx == 0) {
+                // Concurrent admission detected, retry
+                goto retry;
+            }
+
+            // Construct GCD entry from IPC response
+            rh.entry_optional = common::GCDEntry{
+                .wmeta_idx_ = wmeta_idx, .cn_array_ = {common::CNStatus_t{.cn_idx_ = cn_idx, .invalidate_ = false}}};
+        }
+        rh.cn_index = rh.entry_optional.value().cn_array_[0].cn_idx_;
+    }
 
     expected<size_t, ReadErrno> result;
-    switch (selectCacheNode(rh)) {
-        case ReadLocation::CXL_SHARED:
-            result = ReadFromCXL(rh, ptr, count, offset_into_page, local_meta);
-            break;
-        case ReadLocation::LOCAL_NODE:
-            result = ReadFromLocal(rh, ptr, count, offset_into_page, local_meta);
-            break;
-        case ReadLocation::REMOTE_NODE: { /* Cache hit: Page exists on other node, but not on this NUMA Node or CXL */
-            LOG(FATAL) << "Move Remote Page to CXL not implemented";
-            break;
-        }
-        case ReadLocation::NO_ENTRY: { /* Cache miss: GCD get failed */
-            DLOG(INFO) << "Cache miss: GCD get failed, ADMIT new page!";
-            auto admit_result = Admit(block_id, local_meta);
-            admit_retry_cnt++;
-            goto retry;
-        }
-        case ReadLocation::INVALID:
-            LOG(FATAL) << "ReadLocation not initialized";
+    if (cfg_.GetMoveToShare() && !rh.from_cxl) {
+        result = ReadFromLocal(rh, ptr, count, offset_into_page, local_meta);
+    } else {
+        result = ReadFromCXL(rh, ptr, count, offset_into_page, local_meta);
     }
 
     if (!result.has_value()) {
@@ -1013,8 +825,11 @@ retry:
             std::shared_ptr<rackobj::common::TigonIPCClient> client_to_remote_node =
                 ipc_clients[my_partition][partition_num];
 
-            // serialize a key
-            auto serialize = [block_id](uint64_t *data) { data[0] = static_cast<uint64_t>(block_id.GetOffset()); };
+            // serialize inode and key offset
+            auto serialize = [block_id](uint64_t *data) {
+                data[0] = static_cast<uint64_t>(block_id.GetInode());
+                data[1] = static_cast<uint64_t>(block_id.GetOffset());
+            };
             // deserialize the wmeta_idx for the now-shared object
             size_t wmeta_idx, cn_idx;
             auto deserialize = [&wmeta_idx, &cn_idx](const uint64_t *data) {
@@ -1121,9 +936,9 @@ size_t SharedMemoryObjectHandle<Policy>::Write(const common::BlockId &block_id, 
     struct WriteHandle wh;
     std::optional<common::GCDEntry> entry_optional;
     uint64_t retry_cnt = 0;
-#ifdef NR
-    auto nr_meta = local_meta->nr_meta_per_thread_;
-#endif
+    uint8_t partition_num = whose_key(block_id.GetOffset());
+    uint8_t my_partition = static_cast<uint8_t>(local_meta->logical_node_id_);
+    bool move_to_share = cfg_.GetMoveToShare();
 
     if (offset_into_page + count > common::BlockId::kBlockSize) {
         LOG(FATAL) << "SharedMemoryObjectHandle::Write attempting to write " << count << " bytes at an offset of "
@@ -1132,66 +947,122 @@ size_t SharedMemoryObjectHandle<Policy>::Write(const common::BlockId &block_id, 
 
 retry:
     size_t bytes_write = 0;
-    entry_optional = c3po_->Gcd()->GetAnchor(block_id
-#ifdef NR
-                                             ,
-                                             nr_meta
-#endif
-    );
 
-    init_write_handle(wh, block_id, static_cast<uint8_t>(local_meta->logical_node_id_));
-    update_write_handle(wh, block_id, entry_optional);
+    init_write_handle(wh, block_id, my_partition);
 
-    checkCacheNode(wh);
-    // TODO: think about local only copy
-    // check for errors
-    switch (wh.wh_errno) {
-        case WriteErrno::NO_ERROR: {
-            DLOG(INFO) << "cache hit with no error";
-            break;
-        }
-        case WriteErrno::PAGE_NOT_FOUND: {  // Cache miss
-            DLOG(INFO) << "page not found";
-            const uint8_t *to_write;
-            if (count != static_cast<size_t>(SLOT_SIZE))
-                to_write = nullptr;
-            else
-                to_write = ptr;
-            auto result = AdmitWrite(block_id, to_write, local_meta);
-            if (result.error() == std::make_error_code(std::errc::not_enough_memory)) return bytes_write;
-            if (!to_write) {
-                retry_cnt++;
+    if (partition_num == my_partition) {
+        // Owned partition: check local cache directory
+        auto lcd_entry_opt = lcds_[partition_num]->Get(block_id);
+
+        if (!lcd_entry_opt.has_value()) {
+            if (move_to_share) {
+                std::shared_ptr<rackobj::common::LocalMemoryObject<Policy>> my_memory = cache_lcl_ptr_[my_partition];
+                common::LocalCacheNode *new_node = my_memory->policy_.ReserveCacheNode();
+                CHECK(new_node != nullptr)
+                    << "(Ran out of memory?) reserving local index on partition " << my_partition << " with write";
+
+                if (count != static_cast<size_t>(SLOT_SIZE) && local_meta->file_backed_) {
+                    size_t slot_size = static_cast<size_t>(SLOT_SIZE);
+                    ssize_t result = original_syscalls.pread(static_cast<int>(block_id.GetServerId()),
+                                                             reinterpret_cast<char *>(new_node->page_ptr_), slot_size,
+                                                             block_id.GetOffset());
+                    if (result <= 0) {
+                        LOG(ERROR) << "Error reading from disk: " << std::strerror(errno);
+                    }
+                }
+
+                lcds_[partition_num]->Insert(block_id, reinterpret_cast<size_t>(new_node));
+                goto retry;
+            } else {
+                size_t new_index;
+                common::CacheNode *new_node;
+                std::optional<size_t> new_cn_index_optional = cache_shrd_ptr_->scr_bitmap_.ReserveCacheNode();
+                CHECK(new_cn_index_optional.has_value())
+                    << "(Ran out of memory?) inserting to local index on partition " << my_partition << " with write";
+
+                new_index = new_cn_index_optional.value();
+                CHECK(new_index < cache_shrd_ptr_->Size())
+                    << "Invalid cn_index: " << new_index << " cache size: " << cache_shrd_ptr_->Size();
+
+                new_node = cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index);
+
+                if (count != static_cast<size_t>(SLOT_SIZE) && local_meta->file_backed_) {
+                    size_t slot_size = static_cast<size_t>(SLOT_SIZE);
+                    ssize_t result = original_syscalls.pread(
+                        static_cast<int>(block_id.GetServerId()),
+                        reinterpret_cast<char *>(cache_shrd_ptr_->page_data_.GetPage(new_index)), slot_size,
+                        block_id.GetOffset());
+                    if (result <= 0) {
+                        LOG(ERROR) << "Error reading from disk: " << std::strerror(errno);
+                    }
+                }
+
+                size_t slot_size = static_cast<size_t>(SLOT_SIZE);
+                new_node->SetLength(slot_size);
+                new_node->Reinitialize(block_id);
+                cache_shrd_ptr_->scr_bitmap_.SetDirty(new_index, 0);
+
+                c3po_->write_flush(reinterpret_cast<char *>(cache_shrd_ptr_->cache_slot_.GetCacheNode(new_index)),
+                                   sizeof(common::CacheNode));
+
+                auto result = lcds_[my_partition]->Insert(block_id, new_index);
+                CHECK(result) << "insert to local index failed on node " << my_partition;
+
                 goto retry;
             }
-            return static_cast<size_t>(SLOT_SIZE);  // write wout fetch block
         }
-        case WriteErrno::MULTIPLE_REPLICA:  // need collapse the entry and
-        case WriteErrno::PAGE_RO: {         // need to switch to rw
-            DLOG(INFO) << "page RO";
-            auto ec = SwitchRW(wh, local_meta);
-            if (ec == std::make_error_code(std::errc::not_enough_memory)) return bytes_write;
-            retry_cnt++;
-            goto retry;
+
+        CHECK(lcd_entry_opt.has_value()) << block_id << " not found on local";
+
+        common::LCDEntry &lmeta = lcd_entry_opt->get();
+        if (!lmeta.wmeta_idx_.has_value()) {
+            update_write_handle(wh, block_id, lmeta);
+        } else {
+            wh.entry_optional = common::GCDEntry{
+                .wmeta_idx_ = lmeta.wmeta_idx_.value(),
+                .cn_array_ = {common::CNStatus_t{.cn_idx_ = lmeta.cn_idx_.value(), .invalidate_ = false}}};
         }
-        case WriteErrno::MULTIPLE_REPLICA_NOT_ON_CXL: {
-            // need to first move local to cxl and then invalidate
-            LOG(FATAL) << "MULTIPLE_REPLICA_NOT_ON_CXL not handled";
-            break;
+        wh.cn_index = lmeta.cn_idx_.value();
+    } else {
+        // Remote partition: check global cache directory
+        entry_optional = c3po_->Gcd()->GetAnchor(block_id);
+        update_write_handle(wh, block_id, entry_optional);
+
+        if (c3po_->IsEntryEmpty(wh.entry_optional)) {
+            // Entry not in GCD: request share from owning partition via IPC
+            std::shared_ptr<rackobj::common::TigonIPCClient> client_to_remote_node =
+                ipc_clients[my_partition][partition_num];
+
+            // Serialize inode and key offset
+            auto serialize = [block_id](uint64_t *data) {
+                data[0] = static_cast<uint64_t>(block_id.GetInode());
+                data[1] = static_cast<uint64_t>(block_id.GetOffset());
+            };
+
+            // Deserialize wmeta_idx and cn_idx
+            size_t wmeta_idx, cn_idx;
+            auto deserialize = [&wmeta_idx, &cn_idx](const uint64_t *data) {
+                wmeta_idx = data[0];
+                cn_idx = data[1];
+            };
+
+            // Send IPC request to remote partition
+            (void)client_to_remote_node->Call<uint64_t>(rackobj::common::TigonIPCOp::RequestShareCreate, serialize,
+                                                        deserialize);
+
+            if (wmeta_idx == 0 && cn_idx == 0) {
+                // Concurrent admission detected, retry
+                goto retry;
+            }
+
+            // Construct GCD entry from IPC response
+            wh.entry_optional = common::GCDEntry{
+                .wmeta_idx_ = wmeta_idx, .cn_array_ = {common::CNStatus_t{.cn_idx_ = cn_idx, .invalidate_ = false}}};
         }
-        case WriteErrno::PAGE_ON_REMOTE_NODE: {
-            LOG(FATAL) << "Move Remote Page to CXL not implemented";
-            break;
-        }
-        default:
-            LOG(FATAL) << "Unknown error code";
+        wh.cn_index = wh.entry_optional.value().cn_array_[0].cn_idx_;
     }
 
-    expected<size_t, WriteErrno> result;
-
-    if (wh.from_cxl)
-        result = WriteToCXL(wh, ptr, count, offset_into_page, local_meta);
-    else
-        result = WriteToLocal(wh, ptr, count, offset_into_page, local_meta);
+    expected<size_t, WriteErrno> result = WriteToCXL(wh, ptr, count, offset_into_page, local_meta);
 
     if (!result.has_value()) {
         // metadata out of date
@@ -1301,8 +1172,11 @@ retry:
             std::shared_ptr<rackobj::common::TigonIPCClient> client_to_remote_node =
                 ipc_clients[my_partition][partition_num];
 
-            // serialize a key
-            auto serialize = [block_id](uint64_t *data) { data[0] = static_cast<uint64_t>(block_id.GetOffset()); };
+            // serialize inode and key offset
+            auto serialize = [block_id](uint64_t *data) {
+                data[0] = static_cast<uint64_t>(block_id.GetInode());
+                data[1] = static_cast<uint64_t>(block_id.GetOffset());
+            };
             // deserialize the wmeta_idx for the now-shared object
             size_t wmeta_idx, cn_idx;
             auto deserialize = [&wmeta_idx, &cn_idx](const uint64_t *data) {
@@ -1371,7 +1245,6 @@ template <typename Policy>
 std::tuple<size_t, size_t> SharedMemoryObjectHandle<Policy>::PartitionToSharedGet(const common::BlockId &block_id,
                                                                                   const size_t target_partition) {
     auto lmeta_opt = lcds_[target_partition]->Get(block_id);
-    bool move_to_share = cfg_.GetMoveToShare();
     /**
      * Handle insertion of key spurred by remote partition
      */

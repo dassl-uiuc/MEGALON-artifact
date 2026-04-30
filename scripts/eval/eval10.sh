@@ -64,36 +64,34 @@ for variant in "${VARIANTS[@]}"; do
         for workload in "${WORKLOADS[@]}"; do
             for zipf in "${ZIPFS[@]}"; do
                 for w_ratio in "${W_RATIOS[@]}"; do
-                        echo "Running benchmark: scr=${scr_size}MB workload=${workload} zipf=${zipf} w=${w_ratio}"
+                    echo "Running benchmark: scr=${scr_size}MB workload=${workload} zipf=${zipf} w=${w_ratio}"
 
-                        src_dir="${RACKOBJ_RESULT_DIR}${workload}-${w_ratio}/${zipf}"
-                        dst_dir="${RESULT_ROOT}/${variant}/${workload}-${w_ratio}-${zipf}-${scr_size}MB"
+                    src_dir="${RACKOBJ_RESULT_DIR}hcmeta-page-cache/${workload}-${zipf}-${w_ratio}"
+                    dst_dir="${RESULT_ROOT}/${variant}/${workload}-${w_ratio}-${zipf}-${scr_size}MB"
 
-                        sudo rm -rf "$src_dir"
-                        sudo mkdir -p "$src_dir"
-                        sudo chown -R ${USER}:${USER} "$src_dir"
+                    sudo rm -rf "$src_dir"
+                    sudo mkdir -p "$src_dir"
+                    sudo chown -R ${USER}:${USER} "$src_dir"
 
-                        ./scripts/set_uncore_frequency.sh 800000 > /dev/null 2>&1
+                    ./scripts/set_uncore_frequency.sh 800000 > /dev/null 2>&1
 
-                        for num_threads in "${THREAD_COUNTS[@]}"; do
-                            sudo RACKOBJ_CONFIG=${CONFIG_FILE} ./build/benchmarks/page-cache \
-                                $workload $RACKOBJ_RESULT_DIR $num_threads \
-                                $w_ratio $zipf \
-                                $PREHEAT_TIME $EXEC_TIME \
-                                >> "${LOG_ROOT}/${variant}/output_${workload}_${w_ratio}_${zipf}_${scr_size}MB.log" 2>&1
-                        done
-
-                        ./scripts/set_uncore_frequency.sh > /dev/null 2>&1
-
-                        # ---- COPY RESULT ----
-                        if [ -d "$src_dir" ] && [ "$(ls -A "$src_dir")" ]; then
-                            cp -r "$src_dir" "$dst_dir"
-                        else
-                            echo "Error: $src_dir does not exist or is empty"
-                            exit 1
-                        fi
-
+                    for num_threads in "${THREAD_COUNTS[@]}"; do
+                        sudo RACKOBJ_CONFIG=${CONFIG_FILE} ./build/benchmarks/page-cache \
+                            $workload $RACKOBJ_RESULT_DIR $num_threads \
+                            $w_ratio $zipf \
+                            $PREHEAT_TIME $EXEC_TIME \
+                            >> "${LOG_ROOT}/${variant}/output_${workload}_${w_ratio}_${zipf}_${scr_size}MB.log" 2>&1
                     done
+
+                    ./scripts/set_uncore_frequency.sh > /dev/null 2>&1
+
+                    # ---- COPY RESULT ----
+                    if [ -d "$src_dir" ] && [ "$(ls -A "$src_dir")" ]; then
+                        cp -r "$src_dir" "$dst_dir"
+                    else
+                        echo "Error: $src_dir does not exist or is empty"
+                        exit 1
+                    fi
                 done
             done
         done

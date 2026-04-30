@@ -45,12 +45,6 @@ public:
 
     SharedMemoryObjectHandle(const int node, const RackOBJConfig cfg);
 
-#ifdef NR
-    const NrFfi::NrMeta* RegisterNRThread();
-
-    void UnRegisterNRThread(const NrFfi::NrMeta* nr_meta);
-#endif /* NR */
-
     common::LocalMemoryObject<Policy>* RegisterLocalMem();
 
     ~SharedMemoryObjectHandle();
@@ -60,12 +54,6 @@ public:
 
     size_t Get(const common::BlockId& block_id, uint8_t* ptr, size_t count, size_t offset_into_page,
                ThreadLocalMeta<Policy>* local_meta);
-
-    expected<common::CacheNode*, std::error_code> Admit(const common::BlockId& block_id,
-                                                        ThreadLocalMeta<Policy>* local_meta);
-
-    expected<common::CacheNode*, std::error_code> AdmitWrite(const common::BlockId& block_id, const uint8_t* write_data,
-                                                             ThreadLocalMeta<Policy>* local_meta);
 
     expected<common::CacheNode*, std::error_code> CreatePage(const common::BlockId& block_id, const uint8_t* write_data,
                                                              size_t count, ThreadLocalMeta<Policy>* local_meta);

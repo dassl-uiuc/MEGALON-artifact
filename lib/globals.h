@@ -30,9 +30,4 @@ void InsertFilePointer(std::shared_ptr<rackobj::lib::RackOBJFile> fp);
 
 void EraseFilePointer(rackobj::lib::RackOBJFile* fp);
 
-#ifdef NR
-void RegisterNRThread();
-void UnRegisterNRThread();
-#endif
-
 void RegisterLocalMem();

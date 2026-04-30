@@ -80,4 +80,4 @@ else
     echo -e "$COMMENT_LINE\n$EXPORT_LINE"
 fi
 
-./scripts//setup_logical_node.sh 0 3 24
+./scripts/setup_logical_node.sh 0 3 24
