@@ -1,0 +1,18 @@
+mount_directory: /mydata
+key_space: 18000000
+slots: 18001000
+scr_size: 4GB
+logical_scr_size: 200MB
+ncr_size: 36GB
+local_size: 8GB
+replicate: false
+flush: false
+evict: false
+excluded_files:
+partition_ratio: 0.0
+excluded_directories:
+  - /usr
+  - /proc
+  - /etc
+  - /dev
+  - /sys

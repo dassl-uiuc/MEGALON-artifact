@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package rackobj;
+
+service RackOBJServer {
+  rpc CallOpen (OpenRequest) returns (OpenResponse) {}
+
+  rpc FetchBlock ()
+}
+
+message FetchBlockRequest {
+  uint64 inode = 1;
+  uint64 offset = 2;
+}
+
+message FetchBlockResponse {
+  bytes content = 1;
+}
+
+message WriteBlockRequest {
+  uint64 inode = 1;
+  bytes content = 2;
+}
+
+message OpenRequest {
+  string pathname = 1;
+  uint64 serverid = 2;
+  uint64 local_offset = 3;
+}
+
+message CacheIndexMessage {
+  uint64 serverid = 1;
+  uint64 offset = 2;
+  uint64 length = 3;
+}
+
+message OpenResponse {
+  oneof response {
+    bytes file_content = 1;
+    CacheIndexMessage cache_index = 2;
+    int32 errno_val = 3;
+  }
+}

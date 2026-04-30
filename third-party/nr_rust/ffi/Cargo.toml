@@ -1,0 +1,30 @@
+[package]
+name = "nr-ffi"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+node-replication = { path = "../node-replication" }
+# bench_utils = { path = "../bench_utils" }
+nix = { version = "0.29.0", features = ["sched", "process"] }
+arr_macro = "0.2.1"
+core_affinity = "0.8.1"
+hwloc2 = "2.2"
+lazy_static = "1.4"
+log = "0.4"
+num_cpus = "1.12"
+parking_lot = "0.12"
+rand = { version = "0.8", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"] }
+static_assertions = "1.1.0"
+itertools = "0.13.0"
+
+[lib]
+name = "nr_hashmap"
+crate-type = ["staticlib"]
+path = "ffi_nr_hashmap.rs"
+
+[features]
+default = []
+scr = ["node-replication/scr"]
+no-coherence = ["node-replication/no-coherence"]

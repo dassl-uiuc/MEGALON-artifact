@@ -1,0 +1,124 @@
+[package]
+authors = [
+  "Chinmay Kulkarni <chinmayk@cs.utah.edu>",
+  "Gerd Zellweger <mail@gerdzellweger.com>",
+  "Ankit Bhardwaj <bhrdwj.ankit@gmail.com>",
+  "Irina Calciu <icalciu@vmware.com>",
+]
+autobenches = false
+categories = ["algorithms", "concurrency", "data-structures", "no-std", "os"]
+description = "An operation-log based approach that transform single-threaded data structures into concurrent, replicated structures."
+edition = "2018"
+keywords = ["numa", "log", "x86", "black-box", "replication"]
+license = "MIT OR Apache-2.0"
+name = "node-replication"
+readme = "README.md"
+version = "1.0.0"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[dependencies]
+arrayvec = "0.7.2"
+crossbeam-utils = {version = "0.8.5", default-features = false}
+# renamed to avoid confusion with our own `log` modules:
+logging = { version = "0.4", package = "log" }
+static_assertions = "1.1.0"
+nix = { version = "0.29.0", features = ["sched", "process"] }
+hashbrown = { version = "0.15.2", default-features = false }
+spin = "0.9"
+
+[target.'cfg(loom)'.dependencies]
+arr_macro = "0.2.1"
+loom = "0.7.2"
+
+[dev-dependencies]
+env_logger = "0.11.3"
+rand = { version = "0.8", features = ["small_rng"] }
+crossbeam-queue = "0.3.1"
+# Benchmark crates:
+zipf = "7.0"
+bench_utils = { path = "../bench_utils" }
+chashmap = "2.2"
+dashmap = "5.5.3"
+evmap = "10.0.2"
+flurry = "0.5.1"
+parking_lot = "0.12"
+urcu-sys = "=0.0.5"
+x86 = "0.52.0"
+clap = { version = "4.5.7", features = ["yaml"] }
+crossbeam-skiplist = { git = "https://github.com/crossbeam-rs/crossbeam" }
+nrfs = { git = "https://github.com/ankit-iitb/nrfs.git", branch = "master" }
+
+[target.'cfg(not(loom))'.dev-dependencies]
+# Config based dependency due to https://github.com/tokio-rs/tokio/issues/2463
+tokio = { version = "1.11.0", features = ["rt", "macros"] }
+futures =  { version = "0.3.17" }
+
+# Add debug symbols on the release build so that we can debug performance issues
+[profile.release]
+debug = true
+
+[features]
+default = ["async"]
+async = []
+
+# Benchmark features (not intended for public use, no impact on library code)
+# Compare with alternate data-structures:
+cmp = []
+# Make benchmark finish quickly to check if things work:
+smokebench = ["bench_utils/smokebench"]
+# Very exhaustive parameter sweep (takes a day to run on 4 sockets/192 threads):
+exhaustive = ["bench_utils/exhaustive"]
+
+gcd=[]
+
+# enable scr assumption so to cache flush log entries
+scr=[]
+
+# enable non-coherence assumption everything need cache flush
+no-coherence=[]
+
+[[bench]]
+name = "hashmap"
+harness = false
+
+[[bench]]
+name = "gcd"
+harness = false
+
+[[bench]]
+name = "log"
+harness = false
+
+[[bench]]
+name = "stack"
+harness = false
+
+[[bench]]
+name = "synthetic"
+harness = false
+
+[[bench]]
+name = "vspace"
+harness = false
+
+[[bench]]
+name = "hashbench"
+harness = false
+
+[[bench]]
+name = "rwlockbench"
+harness = false
+
+[[bench]]
+name = "lockfree"
+harness = false
+
+[[bench]]
+name = "nrfs"
+harness = false
+
+[[bench]]
+name = "chashbench"
+harness = false

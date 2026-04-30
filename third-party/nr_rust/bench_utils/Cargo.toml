@@ -1,0 +1,39 @@
+[package]
+name = "bench_utils"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = [
+  "Chinmay Kulkarni <chinmayk@cs.utah.edu>",
+  "Gerd Zellweger <mail@gerdzellweger.com>",
+  "Ankit Bhardwaj <bhrdwj.ankit@gmail.com>",
+  "Irina Calciu <icalciu@vmware.com>",
+]
+
+[profile.bench]
+debug = true
+
+[dependencies]
+node-replication = { path = "../node-replication" }
+arr_macro = "0.2.1"
+core_affinity = "0.8.1"
+crossbeam-utils = { version = "0.8", default-features = false }
+csv = "1.1.3"
+hwloc2 = "2.2"
+lazy_static = "1.4"
+log = "0.4"
+num_cpus = "1.12"
+parking_lot = "0.12"
+rand = { version = "0.8", features = ["small_rng"] }
+serde = { version = "1", features = ["derive"] }
+static_assertions = "1.1.0"
+urcu-sys = "=0.0.5"
+nix = { version = "0.29.0", features = ["sched"] }
+tokio = { version = "1.11.0", features = ["full"] }
+async-trait = "0.1.51"
+itertools = "0.13.0"
+
+[features]
+smokebench = []
+# Very exhaustive parameter sweep (may take a day to run on a big machine)
+exhaustive = []
