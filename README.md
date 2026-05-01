@@ -54,7 +54,7 @@ Outputs:
 ## Reproducing Experiments
 Refer to the experiment scripts under `scripts/eval/` (for example: `eval1.sh`, `eval2.sh`, ..., `eval10.sh`). Use the script corresponding to the paper section you want to reproduce.
 
-Note: there is no script for Section 6.8 because it does not run any experiments. Figure 8 is not included int the experiment suite as it is collected through manual `perf` run.
+Note: there is no script for Section 6.6 because it does not run any experiments. Figure 8 is not included int the experiment suite as it is collected through manual `perf` run.
 
 ### Interpreting Results
 Throughput numbers can be found in experiment runs under the corresponding log directory (for example: `logs/sample/`, `logs/eval6/`, `logs/eval7/`).

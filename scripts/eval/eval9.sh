@@ -17,8 +17,8 @@ variant="megalon"
 zipf=0.99
 
 CONFIG_FILE=${PROJECT_ROOT}/config/ycsb.yaml
-LOG_ROOT=${PROJECT_ROOT}/logs/eval8
-RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval8
+LOG_ROOT=${PROJECT_ROOT}/logs/eval9
+RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval9
 ORIGINAL_KEY_SPACE=$(awk '/^key_space:/ {print $2; exit}' "${CONFIG_FILE}")
 
 if [ -z "$RACKOBJ_RESULT_DIR" ]; then
