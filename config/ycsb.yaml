@@ -2,8 +2,8 @@ server_id: 0
 mount_directory: /mydata
 id: 0
 host_address: localhost:50051
-key_space: 1800000
-slots: 30001000
+key_space: 18000000
+slots: 18000100
 scr_size: 2GB
 logical_scr_size: 200MB
 ncr_size: 36GB
