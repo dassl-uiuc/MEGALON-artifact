@@ -19,3 +19,4 @@ logs*/
 **zipf_test
 **pattern_sampler
 **4k-read-rand-multi
+third-party/nr_rust/*

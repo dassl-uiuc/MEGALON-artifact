@@ -1,105 +1,105 @@
-# rackobj
+# MEGALON: Efficient Data Sharing for Partly Coherent CXL Memory
 
-## Binding to a NUMA Node
+This branch contains the `HCMeta` variant of the artifact for:
+MEGALON: Efficient Data Sharing for Partly Coherent CXL Memory
 
-```bash
-numactl --membind=0 --cpunodebind=0 -- <command> <args...>
-```
+## Getting Started
 
-Alternatively...
+### Prerequisites
 
-```bash
-./scripts/numabind 0 <command> <args...>
-```
+- Ubuntu with sudo access (tested on Ubuntu 22.04 with kernel version `5.15.0-131`)
+- `git`, `python3`, and `pip` available in `PATH`
+- At least two NUMA nodes, with one node used to simulate CXL memory
+- Intel CPU support for `clflushopt` and `clwb`
+- Intel uncore frequency driver support. The setup script loads `intel_uncore_frequency`; this artifact has not been tested on machines from other vendors.
 
-## Build Prerequisites
-2. Install required modules
+### Node Setup
 
-```
-./scripts/setup
-```
-
-3. For `NR` libraries:\
-First install the dependencies (note that the script installs Rust nightly version, the installation script might show option prompts. Just select default by hitting 'enter')
-```
-./third-party/nr_rust/install_deps.sh
-```
-
-Also, `libnr_hashmap.a` and `libnr_hashmap_orig.a` need to be present at `third-party/nr_rust/ffi/target/release`. To build the target libraries:
-```
-cd third-party/nr_rust/cpp
-make libs
-```
-
-4. the build requires `clflushopt`. Please contact the author if your hardware does not support this
-
-## For Developers
-1. To support custom `gcd` implemetation, follow how `gcd_nr.h` and `gcd.h` are used in the codebase. The key to `gcd`:
-```
-class BlockId {
-    uint64_t server_id_;
-    ino_t inode_;
-    off_t offset_;
-};
-```
-Should be only hashed on `inode_` and `offset_`. (i.e. `BlockId`s with different `server_id_`s should be hashed to the same key)
-
-## Unoptimized Debug Build
+1. Initialize submodules and install system dependencies:
 
 ```bash
-export CXX=clang++-17
-export CC=clang-17
-export LD=clang++-17
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Debug ..
-make -j
+./scripts/setup.sh
 ```
 
-## Optimized Release Build
+The setup script installs dependencies, configures clang 17, loads the Intel uncore frequency module, sets `RACKOBJ_RESULT_DIR` in `~/.bashrc`, and runs a default logical-node setup.
+
+2. Re-source your shell, or open a new one, to pick up compiler and result-directory exports:
 
 ```bash
-export CXX=clang++-17
-export CC=clang-17
-export LD=clang++-17
-mkdir build-release && cd build-release
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j
+source ~/.bashrc
 ```
 
-## Debugging Build Errors
-
-If your build fails with a `cmake` error, reset the `cmake` cache and rebuild:
-```bash
-cd build
-rm CMakeCache.txt
-export CXX=clang++-17
-export CC=clang-17
-export LD=clang++-17
-cmake ..
-make -j
-```
-
-## VSCode Include Paths
-
-```
-${workspaceFolder}/**
-${workspaceFolder}/common/
-${workspaceFolder}/include/
-${workspaceFolder}/lib/
-${workspaceFolder}/server/
-${workspaceFolder}/third-party/abseil-cpp/
-${workspaceFolder}/third-party/hostrpc/
-${workspaceFolder}/third-party/robin-map/include/
-${workspaceFolder}/third-party/unordered_dense/include/
-${workspaceFolder}/build/protos/
-${workspaceFolder}/build/_deps/yaml-cpp-src/include/
-```
-
-## Misc
+3. Configure logical nodes before compilation when changing the CXL-memory NUMA node, number of logical nodes, or key size:
 
 ```bash
-dd bs=4096 count=262144 if=/dev/random of=<some path>
+./scripts/setup_logical_node.sh <NUMA_MEM> <LOGICAL_NODE_NUM> <KEY_SIZE>
 ```
 
-## Updates
-1. Updating to multiple logical node (abstraction from physical numa nodes).
+Arguments:
+
+- `NUMA_MEM`: NUMA node id designated for CXL memory simulation; this node is slowed down during experiments.
+- `LOGICAL_NODE_NUM`: number of logical nodes to simulate; multiple logical nodes can colocate on the same physical NUMA node.
+- `KEY_SIZE`: key size in bytes for HCMeta.
+
+4. For Experiment 10, the page-cache application expects a backing file. Create it at `/mydata/KV_STORE`:
+
+```bash
+dd bs=4096 count=262144 if=/dev/random of=/mydata/KV_STORE
+```
+
+### Build
+
+`./scripts/build.sh` is the all-in-one build script. It performs these steps:
+
+1. Removes the existing `build/` directory.
+2. Configures CMake with the clang 17 toolchain and Release mode.
+3. Builds with `make -j` in `build/`.
+
+```bash
+./scripts/build.sh
+```
+
+For a focused rebuild after configuration, use:
+
+```bash
+cmake --build build -j --target hcmeta
+```
+
+Benchmark targets are defined in `benchmarks/CMakeLists.txt`, including `kv-store` and `ycsb_benchmark`. The `page-cache` target is built only when `FILE_INTERFACE` is enabled.
+
+### Runtime Configuration
+
+Runtime configuration is selected with `RACKOBJ_CONFIG`; if it is unset, HCMeta falls back to `/opt/rackobj/config`.
+
+Example configuration files are under `config/`. Evaluation scripts set `RACKOBJ_CONFIG` automatically, for example to `config/a.yaml`.
+
+### Sample Run
+
+Use the sample evaluation script. It rebuilds the `hcmeta` variant, runs a zipfian workload benchmark, then analyzes throughput results.
+
+```bash
+./scripts/eval/sample.sh
+```
+
+Outputs:
+
+- Logs: `logs/sample/hcmeta/`, including build output, benchmark output, and `stats.log` analysis.
+- Results: `${RACKOBJ_RESULT_DIR}sample/hcmeta/`, with per-run output directories.
+
+## Reproducing Experiments
+
+Refer to the experiment scripts under `scripts/eval/`, for example `eval1.sh`, `eval2.sh`, ..., `eval10.sh`. Use the script corresponding to the paper section you want to reproduce.
+
+**Note**: the `*-datamove.sh` scripts correspond to the HCMeta-Local variant in the paper.
+
+### Interpreting Results
+
+Throughput numbers can be found in experiment runs under the corresponding log directory, for example `logs/sample/`, `logs/eval6/`, or `logs/eval7/`.
+
+Runs with the same configuration except for thread count should appear in the same log file.
+
+Raw result files are written under `RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval#` by the evaluation scripts, for example `${RACKOBJ_RESULT_DIR}sample/` or `${RACKOBJ_RESULT_DIR}eval6/`. To compute statistics from the raw files, refer to `scripts/eval/sample.sh`, which calls `benchmarks/script/analysis.py` on each result directory.
+
+## Main MEGALON Variant
+
+Check out the `main` branch for the main MEGALON artifact. This branch follows a similar hierarchy and keeps the HCMeta-specific CMake and evaluation configuration.
