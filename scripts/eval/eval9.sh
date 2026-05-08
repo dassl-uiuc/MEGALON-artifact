@@ -7,7 +7,7 @@ while true; sleep 60; do sudo -n true; kill -0 "$$" || exit; done > /dev/null 2>
 PREHEAT_TIME=10
 EXEC_TIME=10
 WORKLOADS=("a" "b" "c" "d" "f")
-D_KEY_SPACE=9000000
+D_KEY_SPACE=7200000
 
 cd $(dirname "$0")/../..
 PROJECT_ROOT="$(pwd)"
