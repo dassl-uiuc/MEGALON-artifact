@@ -1,7 +1,11 @@
 # MEGALON: Efficient Data Sharing for Partly Coherent CXL Memory
 
-This repo is the artifact for:\
-MEGALON: Efficient Data Sharing for Partly Coherent CXL Memory
+This repo is the artifact for:
+> _MEGALON: Efficient Data Sharing for Partly Coherent CXL Memory_,
+> Jiyu Hu, Seokjoo Cho, Landon Johnson, Kiran Hombal, Shreesha G. Bhat, Marcos K. Aguilera, Ramnatthan Alagappan, Aishwarya Ganesan,
+> 20th USENIX Symposium on Operating Systems Design and Implementation, OSDI '26
+
+To reproduce the experiments corresponding to the accepted version of the paper, switch to tag `artifact-eval-v1`.
 
 ## Getting Started
 
