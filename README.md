@@ -14,25 +14,28 @@ To reproduce the experiments corresponding to the accepted version of the paper,
 - git, python3, pip available in PATH
 - At least two NUMA nodes (one used to simulate CXL memory)
 - Intel CPU (setup loads `intel_uncore_frequency` kernel module). The artifact is not tested on machines from other vendors.
+- The CMake toolchain hard-codes the GCC 11 install directory (`/usr/lib/gcc/x86_64-linux-gnu/11`). On distros newer than Ubuntu 22.04, `g++-11` may not be installed by default and must be present before configuring the project.
 
 ### Node Setup
 1. Initialize submodules and install system dependencies:
-```
-./scripts/setup.sh
-```
+    ```bash
+    ./scripts/setup.sh
+    ```
+    On newer Ubuntu releases and other newer distros, `scripts/setup.sh` installs `g++-11` automatically when it is missing so the hard-coded toolchain path continues to resolve.
+
 2. For `NR` libraries (included in `scripts/setup.sh`):\
 First install the dependencies (note that the script installs Rust nightly version, the installation script might show option prompts. Just select default by hitting 'enter')
-```
-./third-party/nr_rust/install_deps.sh
-```
+    ```bash
+    ./third-party/nr_rust/install_deps.sh
+    ```
 3. Re-source your shell (or open a new one) to pick up compiler and result-dir exports:
-```
-source ~/.bashrc
-```
+    ```bash
+    source ~/.bashrc
+    ```
 4. For Experiment 10 (page-cache application), create the backing file expected at `/mydata/KV_STORE`:
-```bash
-dd bs=4096 count=262144 if=/dev/random of=/mydata/KV_STORE
-```
+    ```bash
+    dd bs=4096 count=262144 if=/dev/random of=/mydata/KV_STORE
+    ```
 
 ### Build
 `./scripts/build.sh` is the all-in-one build script. It performs these steps:

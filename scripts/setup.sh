@@ -13,6 +13,11 @@ git apply third-party/hostrpc.diff --directory third-party/hostrpc
 sudo apt-get update -y
 sudo apt-get install -y python3-pip make valgrind clang-format libc++-dev \
     numactl libnuma-dev zlib1g-dev cloc pkg-config libhwloc-dev libmemkind-dev
+
+if ! command -v g++-11 >/dev/null 2>&1; then
+    sudo apt-get install -y g++-11
+fi
+
 sudo apt install clang-format -y
 # sudo apt-get install -y python3-pip g++-10 make valgrind clang-format numactl \
 #     libc++-dev libnuma-dev zlib1g-dev libudev-dev libnl-3-dev libxxhash-dev \
