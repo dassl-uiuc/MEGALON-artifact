@@ -41,7 +41,7 @@ Arguments:
 - `LOGICAL_NODE_NUM`: number of logical nodes to simulate; multiple logical nodes can colocate on the same physical NUMA node.
 - `KEY_SIZE`: key size in bytes for HCMeta.
 
-4. For Experiment 10, the page-cache application expects a backing file. Create it at `/mydata/KV_STORE`:
+4. For Experiment 6.12, the page-cache application expects a backing file. Create it at `/mydata/KV_STORE`:
 
 ```bash
 dd bs=4096 count=262144 if=/dev/random of=/mydata/KV_STORE
@@ -88,17 +88,30 @@ Outputs:
 
 ## Reproducing Experiments
 
-Refer to the experiment scripts under `scripts/eval/`, for example `eval1.sh`, `eval2.sh`, ..., `eval10.sh`. Use the script corresponding to the paper section you want to reproduce.
+The table below maps each paper section to its experiment script(s) under `scripts/eval/`. The `*-datamove.sh` scripts run the HCMeta-local variant in the paper.
 
-**Note**: the `*-datamove.sh` scripts correspond to the HCMeta-Local variant in the paper.
+| § | Section | Script(s) | Notes |
+|---|---------|-----------|-------|
+| 6.1 | Performance under Read-Only Workload | `eval1.sh`, `eval1-datamove.sh` | `eval1-datamove.sh` runs the HCMeta-local variant |
+| 6.2 | Read-only Performance with Growing Dataset Sizes | `eval2.sh`, `eval2-datamove.sh` | `eval2-datamove.sh` runs the HCMeta-local variant |
+| 6.3 | Performance under Read-Write Workloads | `eval3.sh` | |
+| 6.4 | Performance when Coherence Records Do Not Fit | `eval4.sh` | |
+| 6.5 | Performance vs. Object Key Size | `eval5.sh` | |
+| 6.6 | Local-DRAM Usage and Performance | *(none)* | |
+| 6.7 | Performance with Smaller Coherence Records | *(none)* | Megalon-specific section |
+| 6.8 | Performance for Partitioned Workloads | `eval8.sh` | |
+| 6.9 | Benefit of Replicating Objects Locally | *(none)* | Megalon-specific comparison |
+| 6.10 | Performance of All-Log Variant | *(none)* | |
+| 6.11 | YCSB Macrobenchmark | `eval11.sh` | |
+| 6.12 | Page Cache Application | `eval12.sh` | |
 
 ### Interpreting Results
 
-Throughput numbers can be found in experiment runs under the corresponding log directory, for example `logs/sample/`, `logs/eval6/`, or `logs/eval7/`.
+Throughput numbers can be found in experiment runs under the corresponding log directory, for example `logs/sample/`, `logs/eval8/`, or `logs/eval11/`.
 
 Runs with the same configuration except for thread count should appear in the same log file.
 
-Raw result files are written under `RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval#` by the evaluation scripts, for example `${RACKOBJ_RESULT_DIR}sample/` or `${RACKOBJ_RESULT_DIR}eval6/`. To compute statistics from the raw files, refer to `scripts/eval/sample.sh`, which calls `benchmarks/script/analysis.py` on each result directory.
+Raw result files are written under `RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval#` by the evaluation scripts, for example `${RACKOBJ_RESULT_DIR}sample/` or `${RACKOBJ_RESULT_DIR}eval8/`. To compute statistics from the raw files, refer to `scripts/eval/sample.sh`, which calls `benchmarks/script/analysis.py` on each result directory.
 
 ## Main MEGALON Variant
 
