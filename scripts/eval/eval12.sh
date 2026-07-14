@@ -22,8 +22,8 @@ NUM_OBJS=12000000
 SCR_SIZES=(200)
 
 CONFIG_FILE="config/file.yaml"
-LOG_ROOT=${PROJECT_ROOT}/logs/eval10
-RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval10
+LOG_ROOT=${PROJECT_ROOT}/logs/eval12
+RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval12
 
 if [ -z "$RACKOBJ_RESULT_DIR" ]; then
     echo "Error: RACKOBJ_RESULT_DIR is not set or is empty."

@@ -25,7 +25,7 @@ CONSTANT_FILE="src/common/constants.h"
 LOG_ROOT=${PROJECT_ROOT}/logs/eval7
 RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval7
 
-BACKUP_CONSTANT_FILE="${CONSTANT_FILE}.bak.eval6.$$"
+BACKUP_CONSTANT_FILE="${CONSTANT_FILE}.bak.eval7.$$"
 cp "${CONSTANT_FILE}" "${BACKUP_CONSTANT_FILE}"
 
 restore_constant_file() {

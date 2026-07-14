@@ -32,7 +32,7 @@ First install the dependencies (note that the script installs Rust nightly versi
     ```bash
     source ~/.bashrc
     ```
-4. For Experiment 10 (page-cache application), create the backing file expected at `/mydata/KV_STORE`:
+4. For Experiment 6.12 (page-cache application), create the backing file expected at `/mydata/KV_STORE`:
     ```bash
     dd bs=4096 count=262144 if=/dev/random of=/mydata/KV_STORE
     ```
@@ -59,16 +59,30 @@ Outputs:
 - Results: `${RACKOBJ_RESULT_DIR}sample/megalon/` (per-run output directories)
 
 ## Reproducing Experiments
-Refer to the experiment scripts under `scripts/eval/` (for example: `eval1.sh`, `eval2.sh`, ..., `eval10.sh`). Use the script corresponding to the paper section you want to reproduce.
 
-Note: there is no script for Section 6.6 because it does not run any experiments. Figure 8 is not included in the experiment suite as it is collected through manual `perf` run.
+The table below maps each paper section to its experiment script under `scripts/eval/`.
+
+| § | Section | Script | Notes |
+|---|---------|--------|-------|
+| 6.1 | Performance under Read-Only Workload | `eval1.sh` | |
+| 6.2 | Read-only Performance with Growing Dataset Sizes | `eval2.sh` | |
+| 6.3 | Performance under Read-Write Workloads | `eval3.sh` | |
+| 6.4 | Performance when Coherence Records Do Not Fit | `eval4.sh` | |
+| 6.5 | Performance vs. Object Key Size | `eval5.sh` | |
+| 6.6 | Local-DRAM Usage and Performance | *(none)* | Reuses data from `eval2.sh` |
+| 6.7 | Performance with Smaller Coherence Records | `eval7.sh` | |
+| 6.8 | Performance for Partitioned Workloads | `eval8.sh` | |
+| 6.9 | Benefit of Replicating Objects Locally | `eval9.sh` | |
+| 6.10 | Performance of All-Log Variant | *(none)* | Reuses data from `eval2.sh` and `eval3.sh` |
+| 6.11 | YCSB Macrobenchmark | `eval11.sh` | |
+| 6.12 | Page Cache Application | `eval12.sh` | |
 
 ### Interpreting Results
-Throughput numbers can be found in experiment runs under the corresponding log directory (for example: `logs/sample/`, `logs/eval6/`, `logs/eval7/`).
+Throughput numbers can be found in experiment runs under the corresponding log directory (for example: `logs/sample/`, `logs/eval7/`, `logs/eval8/`).
 
 Note: runs with the same configuration except for thread count should appear in the same log file.
 
-Raw latency files are written under `RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval#` by the evaluation scripts (for example: `${RACKOBJ_RESULT_DIR}sample/`, `${RACKOBJ_RESULT_DIR}eval6/`). To compute latency statistics from the raw files, refer to `scripts/eval/sample.sh`, which calls `benchmarks/script/avg_lat.py` on each result directory.
+Raw latency files are written under `RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval#` by the evaluation scripts (for example: `${RACKOBJ_RESULT_DIR}sample/`, `${RACKOBJ_RESULT_DIR}eval7/`). To compute latency statistics from the raw files, refer to `scripts/eval/sample.sh`, which calls `benchmarks/script/avg_lat.py` on each result directory.
 
 ### HCMeta variant
 Checkout to `hcmeta` branch for running experiments corresponding to the `HCMeta` variants. The branch follows a similar hierarchy as the `main` branch.
