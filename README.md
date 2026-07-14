@@ -7,6 +7,8 @@ This repo is the artifact for:
 
 To reproduce the experiments corresponding to the accepted version of the paper, switch to tag `artifact-eval-v1`.
 
+For extra experiments in the final paper, please refer to tag `cr-v2`.
+
 ## Getting Started
 
 ### Prerequisites
@@ -86,3 +88,5 @@ Raw latency files are written under `RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval#` by 
 
 ### HCMeta variant
 Checkout to `hcmeta` branch for running experiments corresponding to the `HCMeta` variants. The branch follows a similar hierarchy as the `main` branch.
+
+Checkout to `alllog` branch for running experiments corresponding to the `AllLog` variants for experiment 6.10.
