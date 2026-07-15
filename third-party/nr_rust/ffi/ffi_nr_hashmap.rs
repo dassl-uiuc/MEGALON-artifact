@@ -56,12 +56,17 @@ pub enum Modify {
     CheckSwitchWmetaArray(BlockId, isize),
 
     DummyLog(BlockId),
+
+    // seqlock operations (AllLog interface)
+    TrySeqLock(BlockId),
+    ReleaseSeqLock(BlockId),
 }
 
 /// We support an immutable read operation to lookup a key from the hashmap.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Access {
     Get(BlockId),
+    GetSeqCount(BlockId),
 }
 
 fn linux_chg_affinity(af: AffinityChange) -> usize {
@@ -139,6 +144,11 @@ impl Dispatch for NrHashMapFFi {
     fn dispatch<'rop>(&self, op: Self::ReadOperation<'rop>) -> Self::Response {
         match op {
             Access::Get(key) => OptionGCDReponse(
+                self.storage.get(&key).map(|&value| GCDReponse {
+                    key: key,
+                    value: value,
+                })),
+            Access::GetSeqCount(key) => OptionGCDReponse(
                 self.storage.get(&key).map(|&value| GCDReponse {
                     key: key,
                     value: value,
@@ -515,6 +525,37 @@ impl Dispatch for NrHashMapFFi {
 
             Modify::DummyLog(key) => {
                 if let Some(entry) = self.storage.get_mut(&key) {
+                    return OptionGCDReponse(Some(GCDReponse {
+                        key: key,
+                        value: *entry,
+                    }));
+                }
+                OptionGCDReponse(None)
+            }
+
+            Modify::TrySeqLock(key) => {
+                if let Some(entry) = self.storage.get_mut(&key) {
+                    if !entry.wmeta_.lock_ {
+                        entry.wmeta_.lock_ = true;
+                        entry.wmeta_.seqcount_ += 1;
+                        return OptionGCDReponse(Some(GCDReponse {
+                            key: key,
+                            value: *entry,
+                        }));
+                    }
+                    // lock is held — return entry but with null key to signal contention
+                    return OptionGCDReponse(Some(GCDReponse {
+                        key: null_BlockId(),
+                        value: *entry,
+                    }));
+                }
+                OptionGCDReponse(None)
+            }
+
+            Modify::ReleaseSeqLock(key) => {
+                if let Some(entry) = self.storage.get_mut(&key) {
+                    entry.wmeta_.lock_ = false;
+                    entry.wmeta_.seqcount_ += 1;
                     return OptionGCDReponse(Some(GCDReponse {
                         key: key,
                         value: *entry,
@@ -1089,5 +1130,71 @@ pub extern "C" fn DummyEvent(metadata: *mut NrMeta, key: BlockId) {
             Modify::DummyLog(key),
             (*metadata).ttkn,
         );
+    }
+}
+
+/// Try to acquire the per-entry seqlock.
+/// Returns TrySeqLockResult with:
+///   status_ == 1: lock acquired, entry_ contains updated entry
+///   status_ == 0: lock already held, entry_ contains current entry
+///   status_ == -1: entry does not exist
+#[no_mangle]
+pub extern "C" fn TrySeqLock(metadata: *mut NrMeta, key: BlockId) -> TrySeqLockResult {
+    unsafe {
+        let wrapper = (*metadata)
+            .nrht
+            .execute_mut(Modify::TrySeqLock(key), (*metadata).ttkn);
+        let response = wrapper.0;
+        match response {
+            Some(value) => {
+                if value.key == null_BlockId() {
+                    TrySeqLockResult {
+                        entry_: value.value,
+                        status_: 0,
+                    }
+                } else {
+                    TrySeqLockResult {
+                        entry_: value.value,
+                        status_: 1,
+                    }
+                }
+            }
+            None => TrySeqLockResult {
+                entry_: init_empty_gcd_entry(),
+                status_: -1,
+            },
+        }
+    }
+}
+
+/// Release the per-entry seqlock and bump seqcount.
+/// Returns new seqcount, or -1 if the entry does not exist.
+#[no_mangle]
+pub extern "C" fn ReleaseSeqLock(metadata: *mut NrMeta, key: BlockId) -> isize {
+    unsafe {
+        let wrapper = (*metadata)
+            .nrht
+            .execute_mut(Modify::ReleaseSeqLock(key), (*metadata).ttkn);
+        let response = wrapper.0;
+        match response {
+            Some(value) => value.value.wmeta_.seqcount_,
+            None => -1,
+        }
+    }
+}
+
+/// Read the current seqcount of the per-entry seqlock (no mutation).
+/// Returns seqcount, or -1 if the entry does not exist.
+#[no_mangle]
+pub extern "C" fn GetSeqCount(metadata: *mut NrMeta, key: BlockId) -> isize {
+    unsafe {
+        let wrapper = (*metadata)
+            .nrht
+            .execute(Access::GetSeqCount(key), (*metadata).ttkn);
+        let response = wrapper.0;
+        match response {
+            Some(value) => value.value.wmeta_.seqcount_,
+            None => -1,
+        }
     }
 }

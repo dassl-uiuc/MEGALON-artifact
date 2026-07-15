@@ -360,20 +360,27 @@ std::optional<size_t> C3POHandle::FindRemoteCacheNodeIndex(const std::optional<c
     return std::nullopt;
 }
 
-bool C3POHandle::read_seq_start(ReadHandle &rh) {
-    std::optional<size_t> cn_index;
-    std::optional<size_t> wmeta_index;
-
+bool C3POHandle::read_seq_start(ReadHandle &rh
+#ifdef NR
+                                ,
+                                const NrFfi::NrMeta *nr_meta
+#endif
+) {
     if (!rh.from_cxl) return true;
 
-    cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
+    std::optional<size_t> cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
     if (!cn_index.has_value()) {
         set_read_handle_errno(rh, ReadErrno::PAGE_NOT_FOUND);
         return false;
     }
 
-    wmeta_index = rh.entry_optional->wmeta_idx_;
-    if (wmeta_index.has_value()) {  // RW mode: enable read sequence lock
+#ifdef NR
+    // AllLog: seqlock is always in the GCD entry; spin until even.
+    size_t seq = c3po_->gcd_->ReadSeqStart(rh.key, nr_meta);
+    rh.seqcount = static_cast<int64_t>(seq);
+#else
+    std::optional<size_t> wmeta_index = rh.entry_optional->wmeta_idx_;
+    if (wmeta_index.has_value()) {
         common::WriteMetadata *wmeta = c3po_->scr_meta_->GetWmeta(wmeta_index.value());
         uint32_t cxl_seq = wmeta->RSeqBegin();
 #ifndef FULL_COHERENCE
@@ -381,19 +388,19 @@ bool C3POHandle::read_seq_start(ReadHandle &rh) {
             c3po_->scr_meta_->GetLocalSeqcount(wmeta_index.value(), rh.current_nid);
         if (local_seq != std::nullopt && local_seq != cxl_seq) {
 #ifdef C3_RWLOCK
-            (void)wmeta->RSeqRetry(0);  // explicitly unlock
+            (void)wmeta->RSeqRetry(0);
 #endif
             c3po_->scr_meta_->UpdateLocalSeqcount(wmeta_index.value(), rh.current_nid, std::nullopt);
             set_read_handle_errno(rh, ReadErrno::PAGE_INCOHERENT);
             return false;
         }
-        // update local cache state
         if (local_seq != std::nullopt) {
             rh.is_local_cpu_cached = true;
         }
 #endif
         rh.seqcount = cxl_seq;
     }
+#endif
     return true;
 }
 
@@ -403,32 +410,31 @@ bool C3POHandle::read_seq_end(ReadHandle &rh
                               const NrFfi::NrMeta *nr_meta
 #endif
 ) {
-    std::optional<size_t> cn_index;
-    std::optional<size_t> wmeta_index;
-
     if (!rh.from_cxl) return true;
 
-    cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
+    std::optional<size_t> cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
     if (!cn_index.has_value()) {
         set_read_handle_errno(rh, ReadErrno::PAGE_NOT_FOUND);
         return false;
     }
 
-    if (!CheckNotification(
 #ifdef NR
-            nr_meta
-#endif
-            )) {
+    // AllLog: notification is always via seqcount in GCD; always retry.
+    if (c3po_->gcd_->ReadSeqRetry(rh.key, nr_meta, static_cast<size_t>(rh.seqcount))) {
+        set_read_handle_errno(rh, ReadErrno::PAGE_INCOHERENT);
+        return false;
+    }
+    return true;
+#else
+    if (!CheckNotification()) {
         DLOG(WARNING) << (rh.from_cxl ? "CXL" : "local") << " page @" << rh.cn_index.value() << " with block_id "
                       << rh.key << " is not coherent";
         set_read_handle_errno(rh, ReadErrno::META_OUTDATE);
         return false;
     }
 
-    // if (h.seq_num check fail) {
-    wmeta_index = rh.entry_optional->wmeta_idx_;
+    std::optional<size_t> wmeta_index = rh.entry_optional->wmeta_idx_;
     if (!wmeta_index.has_value()) {
-        // READ-ONLY page path - track active_node via CacheNode
 #ifdef PARTITIONED_NODE
         common::CacheNode *cn = shared_cache_->cache_slot_.GetCacheNode(cn_index.value());
         uint8_t active_node = cn->GetActiveNode();
@@ -443,12 +449,7 @@ bool C3POHandle::read_seq_end(ReadHandle &rh
                         (static_cast<long double>(key_space_) * partition_ratio_ * (rh.current_nid + 1)) /
                         LOGICAL_NODE_NUM);
                     if (rh.key.GetOffset() >= lower && rh.key.GetOffset() < upper) {
-                        MoveToLocalReadOnly(rh, cn_index.value()
-#ifdef NR
-                                                    ,
-                                            nr_meta
-#endif
-                        );
+                        MoveToLocalReadOnly(rh, cn_index.value());
                     }
                 }
             }
@@ -475,13 +476,9 @@ bool C3POHandle::read_seq_end(ReadHandle &rh
 #ifdef PARTITIONED_NODE
     common::CacheNode *cn = shared_cache_->cache_slot_.GetCacheNode(cn_index.value());
     uint8_t active_node = cn->GetActiveNode();
-    // LOG(INFO) << "Read page " << rh.key << " from node " << active_node << " to node " << rh.current_nid;
     if (active_node == rh.current_nid) {
         c3po_->scr_meta_->IncrementCurrentNodeCount(cn_index.value(), rh.current_nid);
         if (c3po_->scr_meta_->GetCurrentNodeCount(cn_index.value(), rh.current_nid) > CONSECUTIVE_ACCESS_THRESHOLD) {
-            // LOG(INFO) << "Replicating page " << rh.key << " to local node " << rh.current_nid
-            //           << " (active node: " << active_node << ")";
-            // Replicate hot page from shared CXL cache to local DRAM
             if (partition_ratio_ > 0.0) {
                 off_t lower = static_cast<off_t>(
                     (static_cast<long double>(key_space_) * partition_ratio_ * rh.current_nid) / LOGICAL_NODE_NUM);
@@ -490,23 +487,7 @@ bool C3POHandle::read_seq_end(ReadHandle &rh
                     LOGICAL_NODE_NUM);
 
                 if (rh.key.GetOffset() >= lower && rh.key.GetOffset() < upper) {
-                    MoveToLocalReadOnly(rh, cn_index.value()
-#ifdef NR
-                                                ,
-                                        nr_meta
-#endif
-                    );
-                } else {
-                    // LOG(FATAL) << "Page " << rh.key << " is not in the partition,"
-                    //            << " key_offset=" << rh.key.GetOffset() << ", key_space_=" << key_space_
-                    //            << ", partition_ratio_=" << partition_ratio_ << ", LOGICAL_NODE_NUM=" <<
-                    //            LOGICAL_NODE_NUM
-                    //            << ", current_nid=" << rh.current_nid
-                    //            << ", active_node=" << static_cast<uint64_t>(active_node) << ", lower=" <<
-                    //            lower
-                    //            << ", upper=" << upper << ", threshold=" << CONSECUTIVE_ACCESS_THRESHOLD
-                    //            << ", node_count="
-                    //            << c3po_->scr_meta_->GetCurrentNodeCount(cn_index.value(), rh.current_nid);
+                    MoveToLocalReadOnly(rh, cn_index.value());
                 }
             }
         }
@@ -516,24 +497,28 @@ bool C3POHandle::read_seq_end(ReadHandle &rh
     }
 #endif
     return true;
+#endif  // NR
 }
 
-bool C3POHandle::flush_seq_start(ReadHandle &rh) {
-    std::optional<size_t> cn_index;
-    std::optional<size_t> wmeta_index;
-
+bool C3POHandle::flush_seq_start(ReadHandle &rh
+#ifdef NR
+                                 ,
+                                 const NrFfi::NrMeta *nr_meta
+#endif
+) {
     if (!rh.from_cxl) return true;
 
-    cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
+    std::optional<size_t> cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
     if (!cn_index.has_value()) {
-        // set_read_handle_errno(rh, ReadErrno::PAGE_NOT_FOUND);
         return false;
     }
 
-    wmeta_index = rh.entry_optional->wmeta_idx_;
-    // CHECK(wmeta_index.has_value());
-
-    // TODO: should not hit this (we currently do not switch back to ro)
+#ifdef NR
+    size_t seq = c3po_->gcd_->ReadSeqStart(rh.key, nr_meta);
+    rh.seqcount = static_cast<int64_t>(seq);
+    return true;
+#else
+    std::optional<size_t> wmeta_index = rh.entry_optional->wmeta_idx_;
     if (!wmeta_index.has_value()) return false;
 
     common::WriteMetadata *wmeta = c3po_->scr_meta_->GetWmeta(wmeta_index.value());
@@ -542,35 +527,37 @@ bool C3POHandle::flush_seq_start(ReadHandle &rh) {
     std::optional<SharedMetadata::LocalSeqcountT> local_seq =
         c3po_->scr_meta_->GetLocalSeqcount(wmeta_index.value(), rh.current_nid);
     if (local_seq != std::nullopt && local_seq != cxl_seq) {
-        // do not update local seq map because we do not flush page
-        // set_read_handle_errno(rh, ReadErrno::PAGE_INCOHERENT);
         return false;
     }
 #endif
     rh.seqcount = cxl_seq;
     return true;
+#endif
 }
 
-bool C3POHandle::flush_seq_end(ReadHandle &rh) {
-    std::optional<size_t> cn_index;
-    std::optional<size_t> wmeta_index;
-
+bool C3POHandle::flush_seq_end(ReadHandle &rh
+#ifdef NR
+                               ,
+                               const NrFfi::NrMeta *nr_meta
+#endif
+) {
     if (!rh.from_cxl) return true;
 
-    cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
+    std::optional<size_t> cn_index = CacheNodeIndexOnCxl(rh.entry_optional);
     CHECK(cn_index.has_value());
 
-    wmeta_index = rh.entry_optional->wmeta_idx_;
+#ifdef NR
+    return !c3po_->gcd_->ReadSeqRetry(rh.key, nr_meta, static_cast<size_t>(rh.seqcount));
+#else
+    std::optional<size_t> wmeta_index = rh.entry_optional->wmeta_idx_;
     CHECK(wmeta_index.has_value());
 
     common::WriteMetadata *wmeta = c3po_->scr_meta_->GetWmeta(wmeta_index.value());
-
     if (wmeta->RSeqRetry(static_cast<uint32_t>(rh.seqcount))) {
-        // do not update local seq map because we do not flush page
-        // set_read_handle_errno(rh, ReadErrno::PAGE_INCOHERENT);
         return false;
     }
     return true;
+#endif
 }
 
 // TODO: think about local locking
@@ -580,41 +567,33 @@ bool C3POHandle::write_seq_start(WriteHandle &wh
                                  const NrFfi::NrMeta *nr_meta
 #endif
 ) {
-    std::optional<size_t> cn_index;
-    std::optional<size_t> wmeta_index;
-
+#ifdef NR
+    // AllLog: lock is already held via GetWithLock at the page-cache layer.
+    (void)wh;
+    (void)nr_meta;
+    return true;
+#else
     if (!wh.from_cxl) {
-        // TODO: hold local locks
         return true;
     }
 
-    cn_index = CacheNodeIndexOnCxl(wh.entry_optional);
+    std::optional<size_t> cn_index = CacheNodeIndexOnCxl(wh.entry_optional);
     if (!cn_index.has_value()) {
         set_write_handle_errno(wh, WriteErrno::PAGE_NOT_FOUND);
         return false;
     }
 
-    // grab the lock
-    wmeta_index = wh.entry_optional->wmeta_idx_;
+    std::optional<size_t> wmeta_index = wh.entry_optional->wmeta_idx_;
     if (!wmeta_index.has_value()) {
         set_write_handle_errno(wh, WriteErrno::PAGE_RO);
         return false;
     }
     common::WriteMetadata *wmeta = c3po_->scr_meta_->GetWmeta(wmeta_index.value());
     if (!wmeta->WSeqBegin()) {
-        // for dynamic wmeta
         set_write_handle_errno(wh, WriteErrno::META_OUTDATE);
         return false;
     }
 
-#ifdef NR
-    if (!CheckNotificationWrite(nr_meta)) {
-        wmeta->WSeqEnd();
-        set_write_handle_errno(wh, WriteErrno::META_OUTDATE);
-        return false;
-    }
-#else
-    // recheck metadata update, prevent time-to-check and time-to-modify problem, use gcd_get again
     std::optional<common::GCDEntry> recheck_optional = Gcd()->Get(wh.key);
     if (!isEqual(recheck_optional, wh.entry_optional)) {
         (void)c3po_->WUnlock(cn_index.value());
@@ -622,28 +601,28 @@ bool C3POHandle::write_seq_start(WriteHandle &wh
         set_write_handle_errno(wh, WriteErrno::META_OUTDATE);
         return false;
     }
-#endif
 
     return true;
+#endif
 }
 
 void C3POHandle::write_seq_end(WriteHandle &wh, const NrFfi::NrMeta *nr_meta) {
-    std::optional<size_t> cn_index;
-    std::optional<size_t> wmeta_index;
-
     if (!wh.from_cxl) {
-        // TODO: release local locks
         return;
     }
 
-    cn_index = CacheNodeIndexOnCxl(wh.entry_optional);
+#ifdef NR
+    // AllLog: release the per-entry seqlock through GCD.
+    c3po_->gcd_->ReleaseSeqLock(wh.key, nr_meta);
+#else
+    std::optional<size_t> cn_index = CacheNodeIndexOnCxl(wh.entry_optional);
     if (!cn_index.has_value()) {
         LOG(FATAL) << "page evicted during write";
         set_write_handle_errno(wh, WriteErrno::PAGE_NOT_FOUND);
         return;
     }
 
-    wmeta_index = wh.entry_optional->wmeta_idx_;
+    std::optional<size_t> wmeta_index = wh.entry_optional->wmeta_idx_;
     if (!wmeta_index.has_value()) {
         LOG(FATAL) << "page switched to RO when locked";
         set_write_handle_errno(wh, WriteErrno::PAGE_RO);
@@ -651,23 +630,15 @@ void C3POHandle::write_seq_end(WriteHandle &wh, const NrFfi::NrMeta *nr_meta) {
     }
 
     common::WriteMetadata *wmeta = c3po_->scr_meta_->GetWmeta(wmeta_index.value());
-    auto seq = wmeta->WSeqEnd();  // seqlock unlock
+    auto seq = wmeta->WSeqEnd();
 
-    /**
-     * We discussed that this would be incorrect for the very first time, since the seqlock begins
-     * at zero. I have changed my mind on this. Since correct operation is to use write_seq_begin
-     * before write_seq_end, this would only ever see even numbers, not including zero. So the first
-     * time this is called, seq should be == 2
-     */
     if (seq == 0) {
-        // generate log entry for overflow to let readers know their cached value could be stale
-        // some_function(wh.key);
         c3po_->gcd_->SeqCountWrapAround(wh.key, nr_meta);
     }
-// update local seq count
 #ifndef FULL_COHERENCE
     c3po_->scr_meta_->UpdateLocalSeqcount(wmeta_index.value(), wh.current_nid, seq);
 #endif
+#endif  // NR
 }
 
 /**

@@ -75,7 +75,7 @@ The table below maps each paper section to its experiment script under `scripts/
 | 6.7 | Performance with Smaller Coherence Records | `eval7.sh` | |
 | 6.8 | Performance for Partitioned Workloads | `eval8.sh` | |
 | 6.9 | Benefit of Replicating Objects Locally | `eval9.sh` | |
-| 6.10 | Performance of All-Log Variant | *(none)* | Reuses data from `eval2.sh` and `eval3.sh` |
+| 6.10 | Performance of All-Log Variant | `eval10.sh` | |
 | 6.11 | YCSB Macrobenchmark | `eval11.sh` | |
 | 6.12 | Page Cache Application | `eval12.sh` | |
 

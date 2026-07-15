@@ -4,30 +4,24 @@
 sudo -v
 while true; sleep 60; do sudo -n true; kill -0 "$$" || exit; done > /dev/null 2>&1 &
 
-PREHEAT_TIME=10
+PREHEAT_TIME=30
 EXEC_TIME=30
 
 cd $(dirname "$0")/../..
 PROJECT_ROOT="$(pwd)"
 
 # Define loop conditions
-VARIANTS=("megalon")
+VARIANTS=("alllog")
 WORKLOADS=("zipfian")  # Can be expanded to include "hotspot-local"
-W_RATIOS=(0.0)  # Can be expanded to (0.1 0.05 0.01)
+W_RATIOS=(0.0 0.05 0.5)  # Can be expanded to (0.1 0.05 0.01)
 ZIPFS=(0.99)
-THREAD_COUNTS=(6 12 18 24 36 42 48)
-# THREAD_COUNTS=(42 48)
+THREAD_COUNTS=(42)
 NUN_OBJS=(18000000)
 SCR_SIZES=(200)
-CONFIG_FILE="config/a.yaml"
-LOG_ROOT=${PROJECT_ROOT}/logs/eval1
-RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval1
 
-# Check uncore freq
-if ! lsmod | grep -q intel_uncore_frequency; then
-    echo "Uncore frequency driver not installed. Retry the setup steps."
-    exit 1
-fi
+CONFIG_FILE="config/a.yaml"
+LOG_ROOT=${PROJECT_ROOT}/logs/eval10
+RESULT_ROOT=${RACKOBJ_RESULT_DIR}eval10
 
 if [ -z "$RACKOBJ_RESULT_DIR" ]; then
     echo "Error: RACKOBJ_RESULT_DIR is not set or is empty."
@@ -43,8 +37,11 @@ for variant in "${VARIANTS[@]}"; do
     echo "Variant $variant"
     cp cmake-variant/CMakeLists_${variant}.txt CMakeLists.txt
 
-    rm -rf ${RESULT_ROOT}/${variant}
-    mkdir -p ${RESULT_ROOT}/${variant}
+    sudo rm -rf ${RESULT_ROOT}/${variant}
+    sudo mkdir -p ${RESULT_ROOT}/${variant}
+    sudo chown -R ${USER}:${USER} ${RESULT_ROOT}/${variant}
+
+    # set_c3_rwlock
 
     ./scripts/build.sh > ${LOG_ROOT}/${variant}/build_errors.log 2>&1
     if [ $? -ne 0 ]; then
@@ -73,6 +70,13 @@ for variant in "${VARIANTS[@]}"; do
                         sudo rm -rf "$src_dir"
                         mkdir -p "$src_dir"
 
+                        # # Select thread count dynamically
+                        # if [[ "$w_ratio" == "0.5" && "$zipf" == "0.99" ]]; then
+                        #     thread_list=(24)
+                        # else
+                        #     thread_list=(42)
+                        # fi
+
                         ./scripts/set_uncore_frequency.sh 800000 > /dev/null 2>&1
                         for num_threads in "${THREAD_COUNTS[@]}"; do
                             sudo RACKOBJ_CONFIG=${CONFIG_FILE} ./build/benchmarks/kv-store \
@@ -94,33 +98,5 @@ for variant in "${VARIANTS[@]}"; do
     done
 done
 
-# -------------------------------
-# Second loop: Run all analysis
-# -------------------------------
-echo ""
-echo "Starting analysis phase..."
-cd benchmarks/script
-
-for variant in "${VARIANTS[@]}"; do
-    for workload in "${WORKLOADS[@]}"; do
-        for zipf in "${ZIPFS[@]}"; do
-            for w_ratio in "${W_RATIOS[@]}"; do
-                for scr_size in "${SCR_SIZES[@]}"; do
-                    echo "Analyzing tput: workload=$workload, zipf=$zipf, W_RATIOS=$w_ratio, SCR_SIZE=${scr_size}MB" >> ${LOG_ROOT}/${variant}/stat.log
-                    for num_obj in "${NUN_OBJS[@]}"; do
-                        dst_dir="${RESULT_ROOT}/${variant}/${workload}-${w_ratio}-${num_obj}-${zipf}-${scr_size}MB"
-
-                        python3 avg_lat.py $dst_dir rwtf >> ${LOG_ROOT}/${variant}/stat.log
-                    done
-                    echo "" >> ${LOG_ROOT}/${variant}/stat.log
-                done
-            done
-        done
-    done
-done
-cd ${PROJECT_ROOT}
-
-echo "Reverting CMakeLists.txt back to CMakeLists_megalon.txt"
-cp cmake-variant/CMakeLists_megalon.txt CMakeLists.txt
-
-echo "Done"
+echo "Reverting CMakeLists.txt back to CMakeLists_alllog.txt"
+cp cmake-variant/CMakeLists_alllog.txt CMakeLists.txt

@@ -214,7 +214,12 @@ public:
     std::optional<size_t> FindRemoteCacheNodeIndex(const std::optional<common::GCDEntry> &entry_optional,
                                                    int current_nid, int &remote_nid);
 
-    bool read_seq_start(ReadHandle &rh);
+    bool read_seq_start(ReadHandle &rh
+#ifdef NR
+                        ,
+                        const NrFfi::NrMeta *nr_meta
+#endif
+    );
 
     bool read_seq_end(ReadHandle &rh
 #ifdef NR
@@ -224,9 +229,19 @@ public:
     );
 
     /** flush sequence is a vairant of read sequence */
-    bool flush_seq_start(ReadHandle &rh);
+    bool flush_seq_start(ReadHandle &rh
+#ifdef NR
+                         ,
+                         const NrFfi::NrMeta *nr_meta
+#endif
+    );
 
-    bool flush_seq_end(ReadHandle &rh);
+    bool flush_seq_end(ReadHandle &rh
+#ifdef NR
+                       ,
+                       const NrFfi::NrMeta *nr_meta
+#endif
+    );
 
     bool write_seq_start(WriteHandle &wh
 #ifdef NR

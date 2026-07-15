@@ -2,8 +2,8 @@
 
 #include <array>
 #include <limits>
+#include <random>
 
-#include "common/helper.h"
 #include "nr_hashmap.h"
 
 namespace rackobj::common {
@@ -12,7 +12,16 @@ using std::make_shared;
 using std::make_unique;
 using std::unique_ptr;
 
-// thread_local NrFfi::NrMeta* GlobalCacheDirectoryHandleNr::nr_meta_per_thread = nullptr;
+static inline uint64_t rdtsc_ns() {
+    uint64_t tsc;
+    __asm__ volatile("rdtsc" : "=A"(tsc));
+    return tsc / CPU_FREQ_GHZ;
+}
+
+static inline void busy_sleep_ns(uint64_t ns) {
+    uint64_t end = rdtsc_ns() + ns;
+    while (rdtsc_ns() < end) __asm__ volatile("pause" ::: "memory");
+}
 
 GlobalCacheDirectoryNr::GlobalCacheDirectoryNr(size_t num_entries, size_t num_replicas, const uint8_t* base_addr) {
     DLOG(INFO) << "Constructing GCD";
@@ -90,6 +99,8 @@ bool GlobalCacheDirectoryHandleNr::UnRegisterThread(const NrFfi::NrMeta* nr_meta
 std::optional<GCDEntry> GlobalCacheDirectoryHandleNr::Get(const BlockId& block_id, const NrFfi::NrMeta* nr_meta) {
     NrFfi::GCDEntry nr_entry = NrFfi::Get(nr_meta, block_id);
     GCDEntry entry;
+    entry.wmeta_.lock_ = nr_entry.wmeta_.lock_;
+    entry.wmeta_.seqcount_ = static_cast<size_t>(nr_entry.wmeta_.seqcount_);
     for (int i = 0; i < LOGICAL_NODE_NUM + 1; i++) {
         NrFfi::CNStatus_t& nr_status = nr_entry.cn_array_[i];
         CNStatus_t& status = entry.cn_array_[i];
@@ -109,6 +120,8 @@ std::optional<GCDEntry> GlobalCacheDirectoryHandleNr::Get(const BlockId& block_i
 std::optional<GCDEntry> GlobalCacheDirectoryHandleNr::GetAnchor(const BlockId& block_id, const NrFfi::NrMeta* nr_meta) {
     NrFfi::GCDEntry nr_entry = NrFfi::GetAnchor(nr_meta, block_id);
     GCDEntry entry;
+    entry.wmeta_.lock_ = nr_entry.wmeta_.lock_;
+    entry.wmeta_.seqcount_ = static_cast<size_t>(nr_entry.wmeta_.seqcount_);
     for (int i = 0; i < LOGICAL_NODE_NUM + 1; i++) {
         NrFfi::CNStatus_t& nr_status = nr_entry.cn_array_[i];
         CNStatus_t& status = entry.cn_array_[i];
@@ -250,6 +263,58 @@ bool GlobalCacheDirectoryHandleNr::CheckNotificationReset(const NrFfi::NrMeta* n
 
 void GlobalCacheDirectoryHandleNr::SeqCountWrapAround(const BlockId& key, const NrFfi::NrMeta* nr_meta) {
     return NrFfi::DummyEvent(nr_meta, key);
+}
+
+static GCDEntry convert_nr_entry(const NrFfi::GCDEntry& nr_entry) {
+    GCDEntry entry;
+    entry.wmeta_.lock_ = nr_entry.wmeta_.lock_;
+    entry.wmeta_.seqcount_ = static_cast<size_t>(nr_entry.wmeta_.seqcount_);
+    for (int i = 0; i < LOGICAL_NODE_NUM + 1; i++) {
+        const NrFfi::CNStatus_t& nr_status = nr_entry.cn_array_[i];
+        CNStatus_t& status = entry.cn_array_[i];
+        status.cn_idx_ = (nr_status.cn_idx_ != -1) ? std::optional<size_t>(nr_status.cn_idx_) : std::nullopt;
+        status.invalidate_ = nr_status.invalidate_;
+    }
+    entry.wmeta_idx_ = (nr_entry.wmeta_idx_ != -1) ? std::optional<size_t>(nr_entry.wmeta_idx_) : std::nullopt;
+    return entry;
+}
+
+std::optional<GCDEntry> GlobalCacheDirectoryHandleNr::GetWithLock(const BlockId& block_id,
+                                                                  const NrFfi::NrMeta* nr_meta) {
+    thread_local std::mt19937 rng{std::random_device{}()};
+    uint64_t backoff_base = BACKOFF_BASE_NS;
+
+    for (;;) {
+        NrFfi::TrySeqLockResult res = NrFfi::TrySeqLock(nr_meta, block_id);
+        if (res.status_ == -1) return std::nullopt;  // no entry
+        if (res.status_ == 1) return convert_nr_entry(res.entry_);
+        // contended: exponential backoff with jitter
+        uint64_t backoff_range = std::min(backoff_base * 2, static_cast<uint64_t>(BACKOFF_MAX_NS));
+        std::uniform_int_distribution<uint64_t> dist(0, backoff_range);
+        busy_sleep_ns(dist(rng));
+        backoff_base = backoff_range;
+    }
+}
+
+ssize_t GlobalCacheDirectoryHandleNr::ReleaseSeqLock(const BlockId& block_id, const NrFfi::NrMeta* nr_meta) {
+    return NrFfi::ReleaseSeqLock(nr_meta, block_id);
+}
+
+size_t GlobalCacheDirectoryHandleNr::ReadSeqStart(const BlockId& block_id, const NrFfi::NrMeta* nr_meta) {
+    ssize_t seq;
+    do {
+        seq = NrFfi::GetSeqCount(nr_meta, block_id);
+        if (seq == -1) return 0;            // no entry; caller should detect miss
+        __asm__ volatile("" ::: "memory");  // compiler barrier
+    } while (seq & 1);                      // spin while odd (writer active)
+    return static_cast<size_t>(seq);
+}
+
+bool GlobalCacheDirectoryHandleNr::ReadSeqRetry(const BlockId& block_id, const NrFfi::NrMeta* nr_meta,
+                                                size_t saved_seq) {
+    ssize_t cur = NrFfi::GetSeqCount(nr_meta, block_id);
+    if (cur == -1) return true;  // entry gone: treat as retry
+    return static_cast<size_t>(cur) != saved_seq;
 }
 
 }  // namespace rackobj::common

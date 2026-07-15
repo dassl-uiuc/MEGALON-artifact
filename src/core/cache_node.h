@@ -126,8 +126,14 @@ typedef struct CNStatus {
     bool invalidate_;
 } CNStatus_t;
 
+typedef struct SeqLock_t {
+    bool lock_;
+    size_t seqcount_;
+} SeqLockC;
+
 /* assumes the first index is cxl metadata, the remaining is logical node metadata */
 typedef struct GCDEntry_t {
+    SeqLockC wmeta_;
     std::optional<size_t> wmeta_idx_;
     CNStatus_t cn_array_[LOGICAL_NODE_NUM + 1];
 } GCDEntry;
@@ -144,6 +150,10 @@ static inline bool isEqual(const std::optional<GCDEntry>& lhs, const std::option
     const GCDEntry& r = *rhs;
 
     if (l.wmeta_idx_ != r.wmeta_idx_) {
+        return false;
+    }
+
+    if (l.wmeta_.lock_ != r.wmeta_.lock_ || l.wmeta_.seqcount_ != r.wmeta_.seqcount_) {
         return false;
     }
 

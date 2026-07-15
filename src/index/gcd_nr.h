@@ -53,6 +53,28 @@ public:
 
     std::optional<GCDEntry> GetAnchor(const BlockId& block_id, const NrFfi::NrMeta* nr_meta);
 
+    /**
+     * Acquire the per-entry seqlock via NR with exponential backoff.
+     * Returns the GCDEntry with lock held, or nullopt if no entry.
+     */
+    std::optional<GCDEntry> GetWithLock(const BlockId& block_id, const NrFfi::NrMeta* nr_meta);
+
+    /**
+     * Release the per-entry seqlock.
+     * Returns new seqcount, or -1 if no entry.
+     */
+    ssize_t ReleaseSeqLock(const BlockId& block_id, const NrFfi::NrMeta* nr_meta);
+
+    /**
+     * Spin until the seqcount is even (no active writer), return the saved seq.
+     */
+    size_t ReadSeqStart(const BlockId& block_id, const NrFfi::NrMeta* nr_meta);
+
+    /**
+     * Return true if the seqcount has changed since saved_seq (read must retry).
+     */
+    bool ReadSeqRetry(const BlockId& block_id, const NrFfi::NrMeta* nr_meta, size_t saved_seq);
+
     std::optional<ssize_t> Delete(const BlockId& to_remove, const NrFfi::NrMeta* nr_meta);
 
     bool DeleteLocal(const BlockId& to_remove, int nid, const NrFfi::NrMeta* nr_meta);

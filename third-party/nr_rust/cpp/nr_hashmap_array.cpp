@@ -28,7 +28,7 @@ void print_entry(GCDEntry* entry) {
               << "), (" << entry->cn_array_[1].cn_ << ", " << entry->cn_array_[1].invalidate_
               << "), (" << entry->cn_array_[2].cn_ << ", " << entry->cn_array_[2].invalidate_
               << "), (" << entry->cn_array_[3].cn_ << ", " << entry->cn_array_[3].invalidate_
-              << "), wmeta = " << entry->wmeta_idx << "}" << std::endl;
+              << "), wmeta = " << entry->wmeta_idx_ << "}" << std::endl;
 }
 
 void print_key(BlockId *key) {

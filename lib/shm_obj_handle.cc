@@ -57,18 +57,6 @@ SharedMemoryObjectHandle<Policy>::SharedMemoryObjectHandle(const int node, const
         cache_lcl_ptr_[i] =
             common::LocalMemoryObject<Policy>::CreateLocalMemoryObject(num_slots, local_region_[physical_nid]);
 #endif
-
-        /* disabled for logical nodes - managers don't support logical node abstraction yet */
-        // if (i == node) {
-        //     int exec_nid = (node + 1 == NUM_NUMA) ? 0 : node + 1;
-        //     flush_mgr_[i] =
-        //         std::make_unique<common::FlushManagerHandle>(exec_nid, i, shared_cache_node_,
-        //         local_region_[exec_nid]);
-        //     continue;
-        // }
-        // evict_mgr_[i] = std::make_unique<common::EvictManager<Policy>>(i, shared_cache_node_,
-        // local_region_[exec_nid]); repl_mgr_[i] = std::make_unique<common::ReplicateManager<Policy>>(i,
-        // cache_shrd_ptr_, local_region_[exec_nid]);
     }
     c3po_->CreateWmetaMgr(0, local_region_[RidToNumaNode(0)]);  // just hardcode wmeta manager to logical node 0
     c3po_->SetSharedPageCache(cache_shrd_ptr_);
@@ -76,39 +64,37 @@ SharedMemoryObjectHandle<Policy>::SharedMemoryObjectHandle(const int node, const
     c3po_->SetCaches(cache_shrd_ptr_, cache_lcl_ptr_);
 #endif
 
-    /* disabled for logical nodes */
-    // for (int i = 0; i < NUM_NUMA; i++) {
-    //     if (i == node && cfg.DoFlush()) {
-    //         (*flush_mgr_[i])->SetPageCache(cache_shrd_ptr_);
-    //         (*flush_mgr_[i])->SetC3PO(c3po_.get());
-    //         (*flush_mgr_[i])->Run();
-    //     }
+    if (cfg.DoReplication()) {
+        // Allocate per-logical-node local caches and wire up replication managers.
+        // This block is unreachable in PARTITIONED_NODE builds (config.cc LOGs FATAL first).
+        for (int i = 0; i < LOGICAL_NODE_NUM; i++) {
+            int physical_nid = RidToNumaNode(i);
+            cache_lcl_ptr_[i] =
+                common::LocalMemoryObject<Policy>::CreateLocalMemoryObject(num_slots, local_region_[physical_nid]);
+        }
+        c3po_->SetCaches(cache_shrd_ptr_, cache_lcl_ptr_);
 
-    //     if (i == node) continue;
-
-    //     repl_mgr_[i]->SetC3PO(c3po_.get());
-    //     repl_mgr_[i]->SetLocalObj(cache_lcl_ptr_[i]);
-    //     repl_mgr_[i]->SetEvictManager(evict_mgr_[i].get());
-    //     if (cfg.DoReplication()) repl_mgr_[i]->Run();
-
-    //     evict_mgr_[i]->SetC3PO(c3po_.get());
-    //     evict_mgr_[i]->SetSharedMemoryObject(cache_shrd_ptr_);
-    //     evict_mgr_[i]->SetLocalMemoryObject(cache_lcl_ptr_[i]);
-    //     evict_mgr_[i]->SetReplicateManager(repl_mgr_[i].get());
-    //     if (cfg.DoEviction()) evict_mgr_[i]->Run();
-    // }
+        for (int i = 0; i < LOGICAL_NODE_NUM; i++) {
+            int physical_nid = RidToNumaNode(i);
+            repl_mgr_[i] = std::make_unique<common::ReplicateManager<Policy>>(
+                i, cache_shrd_ptr_, local_region_[physical_nid], /*replication_enabled=*/true);
+            repl_mgr_[i]->SetC3PO(c3po_.get());
+            repl_mgr_[i]->SetLocalObj(cache_lcl_ptr_[i]);
+            repl_mgr_[i]->SetEvictManager(nullptr);
+            repl_mgr_[i]->Run();
+        }
+    }
 
     c3po_->StartManager();
 }
 
 template <typename Policy>
 SharedMemoryObjectHandle<Policy>::~SharedMemoryObjectHandle() {
-    /* disabled for logical nodes*/
-    // for (int i = 0; i < NUM_NUMA; i++) {
-    //     if (repl_mgr_[i] && cfg_.DoReplication()) repl_mgr_[i]->Shutdown();
-    //     if (evict_mgr_[i] && cfg_.DoEviction()) evict_mgr_[i]->Shutdown();
-    //     if (flush_mgr_[i] && cfg_.DoFlush()) (*flush_mgr_[i])->Shutdown();
-    // }
+    if (cfg_.DoReplication()) {
+        for (int i = 0; i < LOGICAL_NODE_NUM; i++) {
+            if (repl_mgr_[i]) repl_mgr_[i]->Shutdown();
+        }
+    }
     c3po_->StopManager();
 
 #ifdef DYN_WMETA
@@ -152,10 +138,12 @@ SharedMemoryObjectHandle<Policy>::~SharedMemoryObjectHandle() {
 
 template <typename Policy>
 void SharedMemoryObjectHandle<Policy>::StartReplMgr() {
-    LOG(ERROR) << "StartReplMgr not implemented";
-    for (int i = 0; i < NUM_NUMA; i++) {
-        if (i == shared_cache_node_) continue;
-        repl_mgr_[i]->Run();
+    if (!cfg_.DoReplication()) {
+        LOG(WARNING) << "StartReplMgr called but replication is not enabled";
+        return;
+    }
+    for (int i = 0; i < LOGICAL_NODE_NUM; i++) {
+        if (repl_mgr_[i]) repl_mgr_[i]->Run();
     }
 }
 
@@ -708,18 +696,26 @@ ReadLocation SharedMemoryObjectHandle<Policy>::selectCacheNode(ReadHandle &rh) {
 }
 
 /**
- * case 1: no entry -> return error
- * case 2: on local exclusive -> return no error
- * case 3: on cxl rw shared -> return no error
- * case 4: on cxl ro -> return read only error
+ * case 1: no entry -> PAGE_NOT_FOUND
+ * case 2: RO with multiple replicas -> MULTIPLE_REPLICA (SwitchRW will invalidate non-CXL entries)
+ * case 3: RO single replica -> PAGE_RO (SwitchRW promotes to RW)
+ * case 4: RW shared (CXL) -> no error, write to CXL
+ * case 5: local exclusive -> no error, write locally
  */
 template <typename Policy>
 void SharedMemoryObjectHandle<Policy>::checkCacheNode(WriteHandle &wh) {
-    if (c3po_->IsEntryEmpty(wh.entry_optional)) /* Cache miss: GCD get failed */
+    if (c3po_->IsEntryEmpty(wh.entry_optional)) {
         set_write_handle_errno(wh, WriteErrno::PAGE_NOT_FOUND);
-    else if (c3po_->IsRO(wh.entry_optional)) {
+    } else if (c3po_->IsRO(wh.entry_optional)) {
         wh.cn_index = c3po_->CacheNodeIndexOnCxl(wh.entry_optional);
-        set_write_handle_errno(wh, WriteErrno::PAGE_RO);
+        wh.from_cxl = true;
+        if (c3po_->CheckReplicas(wh.entry_optional)) {
+            // Multiple replicas exist; all must be RO (invariant: non-CXL replica only added in RO mode).
+            DLOG_IF(WARNING, false) << "MULTIPLE_REPLICA detected for block " << wh.key;
+            set_write_handle_errno(wh, WriteErrno::MULTIPLE_REPLICA);
+        } else {
+            set_write_handle_errno(wh, WriteErrno::PAGE_RO);
+        }
     } else {
         bool on_cxl = c3po_->ExistOnCxl(wh.entry_optional);
         if (on_cxl)
@@ -767,7 +763,6 @@ template <typename Policy>
 expected<size_t, ReadErrno> SharedMemoryObjectHandle<Policy>::ReadFromLocal(struct ReadHandle &rh, uint8_t *ptr,
                                                                             size_t count, size_t offset_into_page,
                                                                             ThreadLocalMeta<Policy> *local_meta) {
-    std::optional<common::GCDEntry> entry_optional;
     size_t bytes_read = 0;
 #ifdef NR
     auto nr_meta = local_meta->nr_meta_per_thread_;
@@ -779,8 +774,7 @@ expected<size_t, ReadErrno> SharedMemoryObjectHandle<Policy>::ReadFromLocal(stru
     /* 4. read page (memcpy) */
     bytes_read = CopyToUserBufferLocal(rh, ptr, count, offset_into_page);
 
-    // C3PO API
-    /* GCD recheck */
+    /* GCD recheck via NR notification */
     if (!c3po_->CheckNotification(
 #ifdef NR
             nr_meta
@@ -789,22 +783,9 @@ expected<size_t, ReadErrno> SharedMemoryObjectHandle<Policy>::ReadFromLocal(stru
         set_read_handle_errno(rh, ReadErrno::PAGE_INCOHERENT);
         return unexpected(rh.rh_errno);
     }
-    // local_cn->Unlock();
-
-    // if (!entry_optional.has_value() || !entry_optional->cn_array_[rh.current_nid].cn_idx_.has_value() ||
-    //     entry_optional->cn_array_[rh.current_nid].cn_idx_.value() != rh.cn_index.value() ||
-    //     entry_optional->cn_array_[rh.current_nid].invalidate_) {
-    //     set_read_handle_errno(rh, ReadErrno::PAGE_INCOHERENT);
-    //     return unexpected(rh.rh_errno);
-    // }
 
     if (bytes_read == 0) {
-        LOG(WARNING) << "bytes_read=0: "
-                     << "block_id= " << rh.key << ", entry_optional->cn_array_[" << rh.current_nid << "].cn_idx_=@"
-                     << reinterpret_cast<common::LocalCacheNode *>(
-                            entry_optional->cn_array_[rh.current_nid].cn_idx_.value())
-                     << " .invalidate_= " << entry_optional->cn_array_[rh.current_nid].invalidate_ << ","
-                     << "->wmeta_idx_ = " << static_cast<ssize_t>(entry_optional->wmeta_idx_.value_or(-1));
+        LOG(WARNING) << "bytes_read=0: block_id= " << rh.key << ", cn_index=@" << rh.cn_index.value();
     }
     return bytes_read;
 }
@@ -841,7 +822,12 @@ expected<size_t, ReadErrno> SharedMemoryObjectHandle<Policy>::ReadFromCXL(struct
 
     /* read seq begin */
     // C3PO API
-    if (!c3po_->read_seq_start(rh)) {
+    if (!c3po_->read_seq_start(rh
+#ifdef NR
+                               ,
+                               nr_meta
+#endif
+                               )) {
         return unexpected(rh.rh_errno);
     }
     // cache_->policy_.Touch(*entry_optional);
@@ -859,21 +845,16 @@ expected<size_t, ReadErrno> SharedMemoryObjectHandle<Policy>::ReadFromCXL(struct
         return unexpected(rh.rh_errno);
     }
 
-    /* 6. increase replicate access counter */
-    /* TODO: disabled for logical node */
-    // if (!c3po_->ExistOnLogicalNode(rh.entry_optional, rh.current_nid) &&
-    //     repl_mgr_[rh.current_nid]->ShouldReplicate(rh.cn_index.value())) {
-    //     /* 7. add cn into replicate workqueue */
-    //     if (shouldReplicate(ptr)) {
-    //         if (rh.current_nid == 1) {
-    //             DLOG(INFO) << "debugging";
-    //         }
-    //         bool succeed = repl_mgr_[rh.current_nid]->enqueue(rh.key, rh.cn_index.value());
-    //         if (!succeed) repl_mgr_[rh.current_nid]->ClearReplicate(rh.cn_index.value());
-    //     }
-    // }
+    /* 6. Enqueue for background replication if enabled, RO, no local replica yet, and counter triggered */
+    if (cfg_.DoReplication() && c3po_->IsRO(rh.entry_optional) &&
+        !c3po_->ExistOnLogicalNode(rh.entry_optional, rh.current_nid) && repl_mgr_[rh.current_nid] &&
+        repl_mgr_[rh.current_nid]->ShouldReplicate(rh.cn_index.value())) {
+        if (shouldReplicate(ptr)) {
+            bool succeed = repl_mgr_[rh.current_nid]->enqueue(rh.key, rh.cn_index.value());
+            if (!succeed) repl_mgr_[rh.current_nid]->ClearReplicate(rh.cn_index.value());
+        }
+    }
 
-    // if (bytes_read == 0) LOG(WARNING) << "bytes_read=0";
     return bytes_read;
 }
 
@@ -970,10 +951,10 @@ size_t SharedMemoryObjectHandle<Policy>::Read(const common::BlockId &block_id, u
 retry:
     size_t bytes_read = 0;
 
-    entry_optional = c3po_->Gcd()->GetAnchor(block_id
+    entry_optional = c3po_->Gcd()->Get(block_id
 #ifdef NR
-                                             ,
-                                             nr_meta
+                                       ,
+                                       nr_meta
 #endif
     );
 
@@ -1054,10 +1035,10 @@ size_t SharedMemoryObjectHandle<Policy>::Get(const common::BlockId &block_id, ui
 retry:
     size_t bytes_read = 0;
 
-    entry_optional = c3po_->Gcd()->GetAnchor(block_id
+    entry_optional = c3po_->Gcd()->Get(block_id
 #ifdef NR
-                                             ,
-                                             nr_meta
+                                       ,
+                                       nr_meta
 #endif
     );
 
@@ -1145,12 +1126,11 @@ size_t SharedMemoryObjectHandle<Policy>::Write(const common::BlockId &block_id, 
 
 retry:
     size_t bytes_write = 0;
-    entry_optional = c3po_->Gcd()->GetAnchor(block_id
 #ifdef NR
-                                             ,
-                                             nr_meta
+    entry_optional = c3po_->Gcd()->GetWithLock(block_id, nr_meta);
+#else
+    entry_optional = c3po_->Gcd()->GetAnchor(block_id);
 #endif
-    );
 
     init_write_handle(wh, block_id, entry_optional, local_meta->logical_node_id_);
 
@@ -1164,6 +1144,9 @@ retry:
         }
         case WriteErrno::PAGE_NOT_FOUND: {  // Cache miss
             DLOG(INFO) << "page not found";
+#ifdef NR
+            if (wh.from_cxl) c3po_->Gcd()->ReleaseSeqLock(block_id, nr_meta);
+#endif
             const uint8_t *to_write;
             if (count != (size_t)SLOT_SIZE)
                 to_write = nullptr;
@@ -1177,13 +1160,21 @@ retry:
             }
             return (size_t)SLOT_SIZE;  // write wout fetch block
         }
-        case WriteErrno::MULTIPLE_REPLICA:  // need collapse the entry and
-        case WriteErrno::PAGE_RO: {         // need to switch to rw
+        case WriteErrno::MULTIPLE_REPLICA:
+        case WriteErrno::PAGE_RO: {
+#ifdef NR
+            // AllLog: no RO/RW state; all pages have a GCD seqlock.
+            // Release the lock acquired via GetWithLock before retrying.
+            c3po_->Gcd()->ReleaseSeqLock(block_id, nr_meta);
+            retry_cnt++;
+            goto retry;
+#else
             DLOG(INFO) << "page RO";
             auto ec = SwitchRW(wh, local_meta);
             if (ec == std::make_error_code(std::errc::not_enough_memory)) return bytes_write;
             retry_cnt++;
             goto retry;
+#endif
         }
         case WriteErrno::MULTIPLE_REPLICA_NOT_ON_CXL: {
             // need to first move local to cxl and then invalidate
@@ -1235,12 +1226,11 @@ size_t SharedMemoryObjectHandle<Policy>::Put(const common::BlockId &block_id, co
 retry:
     size_t bytes_write = 0;
 
-    entry_optional = c3po_->Gcd()->GetAnchor(block_id
 #ifdef NR
-                                             ,
-                                             nr_meta
+    entry_optional = c3po_->Gcd()->GetWithLock(block_id, nr_meta);
+#else
+    entry_optional = c3po_->Gcd()->GetAnchor(block_id);
 #endif
-    );
 
     init_write_handle(wh, block_id, entry_optional, local_meta->logical_node_id_);
 
@@ -1253,17 +1243,26 @@ retry:
             break;
         }
         case WriteErrno::PAGE_NOT_FOUND: {  // Cache miss
+#ifdef NR
+            if (wh.from_cxl) c3po_->Gcd()->ReleaseSeqLock(block_id, nr_meta);
+#endif
             auto result = CreateEntry(block_id, ptr, count, local_meta);
             if (result.error() == std::make_error_code(std::errc::not_enough_memory)) return bytes_write;
             return count;
         }
-        case WriteErrno::MULTIPLE_REPLICA:  // need collapse the entry and
-        case WriteErrno::PAGE_RO: {         // need to switch to rw
+        case WriteErrno::MULTIPLE_REPLICA:
+        case WriteErrno::PAGE_RO: {
+#ifdef NR
+            c3po_->Gcd()->ReleaseSeqLock(block_id, nr_meta);
+            retry_cnt++;
+            goto retry;
+#else
             DLOG(INFO) << "page RO";
             auto ec = SwitchRW(wh, local_meta);
             if (ec == std::make_error_code(std::errc::not_enough_memory)) return bytes_write;
             retry_cnt++;
             goto retry;
+#endif
         }
         case WriteErrno::MULTIPLE_REPLICA_NOT_ON_CXL: {
             // need to first move local to cxl and then invalidate

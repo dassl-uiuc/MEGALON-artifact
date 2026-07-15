@@ -25,11 +25,32 @@ pub const fn null_CNStatus() -> CNStatus {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct SeqLock {
+    pub lock_: bool,
+    pub seqcount_: isize,
+}
+
+pub const fn null_SeqLock() -> SeqLock {
+    SeqLock {
+        lock_: false,
+        seqcount_: 0,
+    }
+}
+
+#[repr(C)]
+pub struct TrySeqLockResult {
+    pub entry_: GCDEntry,
+    pub status_: isize,
+}
+
 // GCDEntry struct
 // the first element in array is cxl mem, assumes number of element is LOGICAL_NODE_NUM + 1
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct GCDEntry {
+    pub wmeta_: SeqLock,
     pub wmeta_idx_: isize,
     pub cn_array_: [CNStatus; LOGICAL_NODE_NUM + 1],
 }
@@ -45,6 +66,7 @@ pub fn init_gcd_entry(cn: isize, idx: u64) -> GCDEntry {
     }
 
     GCDEntry {
+        wmeta_: null_SeqLock(),
         wmeta_idx_: -1,
         cn_array_: array,
     }
@@ -54,6 +76,7 @@ pub fn init_empty_gcd_entry() -> GCDEntry {
     let array = [null_CNStatus(); LOGICAL_NODE_NUM + 1];
 
     GCDEntry {
+        wmeta_: null_SeqLock(),
         wmeta_idx_: -1,
         cn_array_: array,
     }
@@ -63,6 +86,7 @@ pub fn init_empty_gcd_entry_with_wmeta_idx(wmeta_idx: isize) -> GCDEntry {
     let array = [null_CNStatus(); LOGICAL_NODE_NUM + 1];
 
     GCDEntry {
+        wmeta_: null_SeqLock(),
         wmeta_idx_: wmeta_idx,
         cn_array_: array,
     }
@@ -271,6 +295,7 @@ pub fn init_gcd_entry_debug(key: BlockId, cn: isize, idx: u64) -> GCDEntry {
     }
 
     GCDEntry {
+        wmeta_: null_SeqLock(),
         wmeta_idx_: -1,
         cn_array_: array,
     }

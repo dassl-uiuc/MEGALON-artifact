@@ -13,10 +13,21 @@ typedef struct CNStatus_t {
     bool invalidate_;
 } CNStatus;
 
+typedef struct SeqLock_t {
+    bool lock_;
+    ssize_t seqcount_;
+} SeqLock;
+
 typedef struct GCDEntry_t {
-    ssize_t wmeta_idx;
+    SeqLock wmeta_;
+    ssize_t wmeta_idx_;
     CNStatus cn_array_[NUM_NODE];
 } GCDEntry;
+
+typedef struct TrySeqLockResult_t {
+    GCDEntry entry_;
+    ssize_t status_;
+} TrySeqLockResult;
 
 class BlockId {
 public:
@@ -83,6 +94,24 @@ namespace NrFfi {
         bool CheckCoherence(NrMeta* metadata, BlockId key);
         void ResetCoherence(NrMeta* metadata, BlockId key);
         bool CheckCoherenceReset(NrMeta* metadata, BlockId key);
+
+        /**
+         * TrySeqLock: try to acquire the per-entry seqlock.
+         *   status_ == 1: acquired; status_ == 0: contended; status_ == -1: no entry
+         */
+        TrySeqLockResult TrySeqLock(NrMeta* metadata, BlockId key);
+
+        /**
+         * ReleaseSeqLock: release the per-entry seqlock.
+         * Returns new seqcount, or -1 if no entry.
+         */
+        ssize_t ReleaseSeqLock(NrMeta* metadata, BlockId key);
+
+        /**
+         * GetSeqCount: read the current seqcount (immutable, no lock taken).
+         * Returns seqcount, or -1 if no entry.
+         */
+        ssize_t GetSeqCount(NrMeta* metadata, BlockId key);
     }
 }
 

@@ -16,8 +16,6 @@
 #include "absl/log/check.h"
 #include "access_pattern.h"
 
-#define CPU_FREQ_GHZ 2.1
-
 pthread_barrier_t* InitializeBarrier(size_t subprocess_count) {
     shm_unlink("/barrier");
     int shm_fd = shm_open("/barrier", O_CREAT | O_EXCL | O_RDWR, 0666);

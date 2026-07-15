@@ -10,7 +10,7 @@ BUILDDIR=build
 
 # all: $(BUILDDIR)/nr_hashmap $(BUILDDIR)/array_nr_hashmap
 # all: $(BUILDDIR)/array_nr_hashmap
-all: $(BUILDDIR)/coherence_nr_hashmap $(BUILDDIR)/array_nr_hashmap $(BUILDDIR)/array_nr_hashmap_scr
+all: $(BUILDDIR)/coherence_nr_hashmap $(BUILDDIR)/array_nr_hashmap $(BUILDDIR)/array_nr_hashmap_scr $(BUILDDIR)/seqlock_nr_hashmap
 libs: clean rust_lib rust_lib_orig rust_lib_noco
 
 build_dir:
@@ -50,6 +50,9 @@ $(BUILDDIR)/array_nr_hashmap_scr: $(BUILDDIR)/nr_hashmap_array.o rust_lib
 	$(CC) -o $@ $< $(LDLIBS) $(LDRUSTLIBS)
 
 $(BUILDDIR)/coherence_nr_hashmap: $(BUILDDIR)/nr_hashmap_coherence.o rust_lib_orig
+	$(CC) -o $@ $< $(LDLIBS) $(LDRUSTLIBSORIG)
+
+$(BUILDDIR)/seqlock_nr_hashmap: $(BUILDDIR)/nr_hashmap_seqlock.o rust_lib_orig
 	$(CC) -o $@ $< $(LDLIBS) $(LDRUSTLIBSORIG)
 
 clean:

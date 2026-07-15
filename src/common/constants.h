@@ -35,6 +35,7 @@
 
 // local_work_allocator.h
 #define REPL_WQ_SIZE 102400
+#define REPLICATE_THRESHOLD 2
 
 // connection_pool.cc
 #define HASH_SEED ((uint32_t)1234567890)
@@ -84,6 +85,11 @@
 #endif
 
 #define RANDSLOTALLOC 1  // reserve slot from random index in the array
+
+#define CPU_FREQ_GHZ 2.1
+
+#define BACKOFF_BASE_NS 500000ULL   // 500 µs
+#define BACKOFF_MAX_NS 50000000ULL  // 50 ms
 
 // static double PARTITION_RATIO = 1.0;
 // static size_t KEY_SPACE_STATIC = 0;

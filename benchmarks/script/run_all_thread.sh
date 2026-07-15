@@ -20,8 +20,10 @@ do
     # sudo RACKOBJ_CONFIG=config/a.yaml ./build/benchmarks/limits-thread-dump partial-partitioned $RACKOBJ_RESULT_DIR $i 0.0 0.7 1.0 1.0 10 10
     # sudo RACKOBJ_CONFIG=config/a.yaml ./build/benchmarks/megalon partial-partitioned $RACKOBJ_RESULT_DIR $i 0.0 0.99 1.0 1.0 30 30
     # sudo RACKOBJ_CONFIG=config/file.yaml ./build/benchmarks/megalon-file zipfian $RACKOBJ_RESULT_DIR $i 0.0 0.99 1.0 1.0 10 30
+    # sudo RACKOBJ_CONFIG=config/replicate.yaml ./build/benchmarks/kv-store zipfian $RACKOBJ_RESULT_DIR $i 0.0 0.99 1.0 1.0 30 30
+    sudo RACKOBJ_CONFIG=config/a.yaml ./build/benchmarks/kv-store zipfian $RACKOBJ_RESULT_DIR $i 0.5 0.99 1.0 1.0 10 30
 
-    sudo RACKOBJ_CONFIG=config/ycsb.yaml ./build/benchmarks/ycsb_benchmark d $RACKOBJ_RESULT_DIR $i 0.99 10 10
+    # sudo RACKOBJ_CONFIG=config/ycsb.yaml ./build/benchmarks/ycsb_benchmark d $RACKOBJ_RESULT_DIR $i 0.99 10 10
     
     echo "--------------------------------"
     sleep 2

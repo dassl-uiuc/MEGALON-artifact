@@ -110,7 +110,12 @@ size_t FlushManager::DoFlushShared(
             init_read_handle(rh, block_id, entry_optional, target_node_);
             rh.from_cxl = true;
 
-            if (!c3po_->flush_seq_start(rh)) {
+            if (!c3po_->flush_seq_start(rh
+#ifdef NR
+                                        ,
+                                        nr_meta
+#endif
+                                        )) {
                 // read sequence fail
                 continue;
             }
@@ -118,7 +123,12 @@ size_t FlushManager::DoFlushShared(
             // actual mem copy
             memcpy(buf_, shared_cache->page_data_.GetDataSlot(cn_index), static_cast<size_t>(SLOT_SIZE));
 
-            if (!c3po_->flush_seq_end(rh)) {
+            if (!c3po_->flush_seq_end(rh
+#ifdef NR
+                                      ,
+                                      nr_meta
+#endif
+                                      )) {
                 // read sequence fail
                 continue;
             }
@@ -130,7 +140,12 @@ size_t FlushManager::DoFlushShared(
             // lock; check and set dirty
             common::WriteMetadata *wmeta = c3po_->GetWmeta(entry_optional.value().wmeta_idx_.value());
             if (wmeta->WLockOnly()) {
-                if (c3po_->flush_seq_end(rh)) {
+                if (c3po_->flush_seq_end(rh
+#ifdef NR
+                                         ,
+                                         nr_meta
+#endif
+                                         )) {
                     // read sequence succeed, clear dirty
                     shared_cache->scr_bitmap_.SetDirty(cn_index, false);
                     // updated policy: iteration starts from last index that is switched to RO

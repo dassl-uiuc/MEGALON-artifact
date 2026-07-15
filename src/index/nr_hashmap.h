@@ -15,10 +15,21 @@ typedef struct CNStatus {
     bool invalidate_;
 } CNStatus_t;
 
+typedef struct SeqLock_t {
+    bool lock_;
+    ssize_t seqcount_;
+} SeqLock;
+
 typedef struct GCDEntry_t {
+    SeqLock wmeta_;
     ssize_t wmeta_idx_;
     CNStatus_t cn_array_[LOGICAL_NODE_NUM + 1];
 } GCDEntry;
+
+typedef struct TrySeqLockResult_t {
+    GCDEntry entry_;
+    ssize_t status_;
+} TrySeqLockResult;
 
 extern "C" {
 NrRapper* create_node_replicated(uint64_t cap, uint64_t num_replica);
@@ -97,6 +108,24 @@ bool CheckNotificationReset(const NrMeta* metadata);
  * not modifying the replicas, just adding a log entry for notification invalidation
  */
 void DummyEvent(const NrMeta* metadata, rackobj::common::BlockId key);
+
+/**
+ * TrySeqLock: try to acquire the per-entry seqlock.
+ *   status_ == 1: acquired; status_ == 0: contended; status_ == -1: no entry
+ */
+TrySeqLockResult TrySeqLock(const NrMeta* metadata, rackobj::common::BlockId key);
+
+/**
+ * ReleaseSeqLock: release the per-entry seqlock.
+ * Returns new seqcount, or -1 if no entry.
+ */
+ssize_t ReleaseSeqLock(const NrMeta* metadata, rackobj::common::BlockId key);
+
+/**
+ * GetSeqCount: read the current seqcount without taking a lock.
+ * Returns seqcount, or -1 if no entry.
+ */
+ssize_t GetSeqCount(const NrMeta* metadata, rackobj::common::BlockId key);
 
 }  // extern "C"
 }  // namespace NrFfi

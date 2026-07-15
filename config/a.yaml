@@ -1,6 +1,6 @@
 mount_directory: /mydata
-key_space: 4800000
-slots: 4801000
+key_space: 18000000
+slots: 18001000
 scr_size: 4GB
 logical_scr_size: 200MB
 ncr_size: 36GB
