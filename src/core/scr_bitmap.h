@@ -37,12 +37,25 @@ public:
     bool IsDirty(size_t cn_index) const { return bitmap_testbit(dirty_bitmap_start_addr_, cn_index); }
 
     void SetDirty(size_t cn_index, bool dirty) {
+        size_t index = bitmap_index(cn_index);
+        uint32_t offset = bitmap_offset(cn_index);
+        // only the thread that actually flips the bit updates the counter, so it cannot drift or underflow
         if (dirty) {
-            bitmap_setbit(dirty_bitmap_start_addr_, cn_index);
-            dirty_count_.fetch_add(1, std::memory_order_relaxed);
+            while (!load_bit(dirty_bitmap_start_addr_, index, offset)) {
+                if (try_setbit_exclusive(dirty_bitmap_start_addr_, index, offset)) {
+                    dirty_count_.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+                cpu_relax();
+            }
         } else {
-            bitmap_clearbit(dirty_bitmap_start_addr_, cn_index);
-            dirty_count_.fetch_sub(1, std::memory_order_relaxed);
+            while (load_bit(dirty_bitmap_start_addr_, index, offset)) {
+                if (try_clearbit_exclusive(dirty_bitmap_start_addr_, index, offset)) {
+                    dirty_count_.fetch_sub(1, std::memory_order_relaxed);
+                    break;
+                }
+                cpu_relax();
+            }
         }
     }
 
@@ -119,9 +132,9 @@ private:
     const size_t num_pages_;
     // size_t wmeta_slots_;
 
-    std::atomic<size_t> count_;
-    std::atomic<size_t> wmeta_count_;
-    std::atomic<size_t> dirty_count_;
+    // shared counters are RMW'd by all hosts: keep each on its own cache line
+    alignas(64) std::atomic<size_t> count_;
+    alignas(64) std::atomic<size_t> dirty_count_;
     // int64_t wmeta_count_threshold_;
 
     static thread_local std::minstd_rand rng;

@@ -11,7 +11,6 @@ SharedBitmap::SharedBitmap(size_t num_pages, size_t wmeta_threshold,
       wmeta_bitmap_start_addr_(nullptr),
       num_pages_(num_pages),
       count_(0),
-      wmeta_count_(0),
       dirty_count_(0)
 /*wmeta_count_threshold_(0)*/
 {
@@ -44,7 +43,6 @@ SharedBitmap::SharedBitmap(size_t num_pages, const std::shared_ptr<AllocatableLo
       wmeta_bitmap_start_addr_(nullptr),
       num_pages_(num_pages),
       count_(0),
-      wmeta_count_(0),
       dirty_count_(0)
 /*wmeta_count_threshold_(0)*/
 {

@@ -167,12 +167,9 @@ void SharedMemoryObjectHandle<Policy>::ClearReclaimCount() {
 template <typename Policy>
 size_t SharedMemoryObjectHandle<Policy>::CopyToUserBufferCXL(const ReadHandle &rh, void *ptr, size_t count,
                                                              size_t offset_into_page) {
-    common::CacheNode *cn;
-
     CHECK(rh.from_cxl) << "CacheNode from Local";
 
-    cn = cache_shrd_ptr_->cache_slot_.GetCacheNode(rh.cn_index.value());
-    cn->DecreaseEvict();
+    cache_shrd_ptr_->cache_slot_.DecreaseEvict(rh.cn_index.value());
 
     // size_t bytes_read = std::min(count, cn->GetLength());
     size_t bytes_read = std::min(count, static_cast<size_t>(SLOT_SIZE));
@@ -310,6 +307,10 @@ expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>:
         } else {
             LOG(FATAL) << "Error: " << std::strerror(errno) << " attempting to read non existent block " << block_id;
         }
+#ifndef FULL_COHERENCE
+        // write the fetched data back to CXL before the slot is published
+        c3po_->cache_flush(reinterpret_cast<char *>(cache_shrd_ptr_->GetDataSlot(new_index)), (size_t)SLOT_SIZE);
+#endif
     }
 
     // 7. cn set blockid
@@ -456,6 +457,10 @@ expected<common::CacheNode *, std::error_code> SharedMemoryObjectHandle<Policy>:
                 LOG(ERROR) << "Error: " << std::strerror(errno) << " attempting to read non existent block "
                            << block_id;
             }
+#ifndef FULL_COHERENCE
+            // write the fetched data back to CXL before the slot is published
+            c3po_->cache_flush(reinterpret_cast<char *>(cache_shrd_ptr_->GetDataSlot(new_index)), (size_t)SLOT_SIZE);
+#endif
             DLOG(INFO) << "admit write fetch block from disk";
         }
     }
@@ -942,8 +947,7 @@ expected<size_t, WriteErrno> SharedMemoryObjectHandle<Policy>::WriteToCXL(struct
     // C3PO API
     c3po_->write_seq_end(wh, nr_meta);
 
-    common::CacheNode *cn = cache_shrd_ptr_->cache_slot_.GetCacheNode(wh.cn_index.value());
-    cn->DecreaseEvict();
+    cache_shrd_ptr_->cache_slot_.DecreaseEvict(wh.cn_index.value());
 
     if (bytes_write == 0) LOG(WARNING) << "bytes_write=0";
     return bytes_write;
@@ -1009,6 +1013,13 @@ retry:
             case ReadErrno::NO_ERROR:
                 break;
             case ReadErrno::META_OUTDATE:
+                // the failed attempt may already have pulled (now stale) page lines into the cache, and the retry
+                // can take the local-seqcount fast path that skips invalidation: drop them before retrying
+                if (rh.from_cxl && rh.cn_index.has_value()) {
+#ifndef FULL_COHERENCE
+                    cache_flush_data(rh);
+#endif
+                }
                 goto retry;
             case ReadErrno::PAGE_INCOHERENT:
                 if (rh.from_cxl) {
@@ -1091,6 +1102,13 @@ retry:
             case ReadErrno::NO_ERROR:
                 break;
             case ReadErrno::META_OUTDATE:
+                // the failed attempt may already have pulled (now stale) page lines into the cache, and the retry
+                // can take the local-seqcount fast path that skips invalidation: drop them before retrying
+                if (rh.from_cxl && rh.cn_index.has_value()) {
+#ifndef FULL_COHERENCE
+                    cache_flush_data(rh);
+#endif
+                }
                 goto retry;
             case ReadErrno::PAGE_INCOHERENT:
                 if (rh.from_cxl) {

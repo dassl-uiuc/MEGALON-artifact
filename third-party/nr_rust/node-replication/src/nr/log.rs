@@ -109,7 +109,7 @@ use core::arch::asm;
 // }
 
 #[cfg(any(feature = "scr", feature = "no-coherence"))]
-pub use crate::log::flush_cache_line;
+pub use crate::log::{flush_cache_line, flush_object};
 #[cfg(feature = "no-coherence")]
 pub use crate::log::{load_with_flush, store_with_flush, fetch_max_with_flush, load_with_flush_bool};
 pub use crate::log::LogToken;
@@ -269,6 +269,26 @@ where
             };
 
             // Successfully reserved entries on the shared log. Add the operations in.
+            // The entries live in non-coherent memory: write each one back, then
+            // publish the whole batch through the coherent commit tail (alivef is unused).
+            #[cfg(feature = "scr")]
+            {
+                for (i, op) in ops.iter().enumerate().take(nops) {
+                    let e = self.slog[self.index(tail + i)].as_ptr();
+                    unsafe {
+                        (*e).operation = Some(op.clone());
+                        (*e).replica = idx.0;
+                        flush_object(e as *const _);
+                    }
+                }
+                // the entries must reach memory before commit_tail covers them
+                unsafe {
+                    _mm_sfence();
+                }
+                self.publish(tail, nops);
+            }
+
+            #[cfg(not(feature = "scr"))]
             for (i, op) in ops.iter().enumerate().take(nops) {
                 let e = self.slog[self.index(tail + i)].as_ptr();
                 let mut m = self.lmasks[idx.0 - 1].get();
@@ -278,13 +298,7 @@ where
                 // case, we flip the mask we were originally going to write into the
                 // allocated entry. We cannot flip lmasks[idx - 1] because this replica
                 // might still need to execute a few entries before the wrap around.
-                #[cfg(not(feature = "no-coherence"))]
                 if unsafe { (*e).alivef.load(Ordering::Relaxed) == m } {
-                    m = !m;
-                }
-
-                #[cfg(feature = "no-coherence")]
-                if unsafe { load_with_flush_bool(&(*e).alivef) == m } {
                     m = !m;
                 }
 
@@ -293,16 +307,6 @@ where
                     (*e).replica = idx.0;
                     (*e).alivef.store(m, Ordering::Release);
                 }
-                
-                #[cfg(any(feature = "scr", feature = "no-coherence"))]
-                unsafe {
-                    flush_cache_line(e as *const _);
-                }
-            }
-
-            #[cfg(any(feature = "scr", feature = "no-coherence"))]
-            unsafe {
-                _mm_sfence();
             }
 
             // If needed, advance the head of the log forward to make room on the log.
@@ -382,11 +386,13 @@ where
 
         // Check if we have any work to do by comparing our local tail with the log's
         // global tail. If they're equal, then we're done here and can simply return.
-        #[cfg(not(feature = "no-coherence"))]
-        let gtail = self.tail.load(Ordering::Relaxed);
+        // With scr, replay only published entries: the commit tail is coherent, so
+        // reading it needs no flush, and we never wait on an entry still being written.
+        #[cfg(feature = "scr")]
+        let gtail = self.commit_tail.load(Ordering::Acquire);
 
-        #[cfg(feature = "no-coherence")]
-        let gtail = load_with_flush(&self.tail);
+        #[cfg(not(feature = "scr"))]
+        let gtail = self.tail.load(Ordering::Relaxed);
 
         if ltail == gtail {
             return;
@@ -403,32 +409,45 @@ where
             panic!("Local tail not within the shared log!")
         };
 
+        // The published entries were written back before the commit tail covered them:
+        // drop any stale copies, with a single fence for the whole batch.
+        #[cfg(feature = "scr")]
+        {
+            for i in ltail..gtail {
+                let e = self.slog[self.index(i)].as_ptr();
+                unsafe {
+                    flush_object(e as *const _);
+                }
+            }
+            unsafe {
+                _mm_mfence();
+            }
+        }
+
         // Execute all operations from the passed in offset to the shared log's tail.
         // Check if the entry is live first; we could have a replica that has reserved
         // entries, but not filled them into the log yet.
         for i in ltail..gtail {
-            let mut iteration = 1;
             let e = self.slog[self.index(i)].as_ptr();
 
-            #[cfg(any(feature = "scr", feature = "no-coherence"))]
-            unsafe {
-                _mm_clflush(e as *const _);
-            }
+            #[cfg(not(feature = "scr"))]
+            {
+                let mut iteration = 1;
+                while unsafe { (*e).alivef.load(Ordering::Acquire) != self.lmasks[idx.0 - 1].get() } {
+                    if iteration % WARN_THRESHOLD == 0 {
+                        warn!(
+                            "alivef not being set for self.index(i={}) = {} (self.lmasks[{}] is {})...",
+                            i,
+                            self.index(i),
+                            idx.0 - 1,
+                            self.lmasks[idx.0 - 1].get()
+                        );
+                    }
+                    iteration += 1;
 
-            while unsafe { (*e).alivef.load(Ordering::Acquire) != self.lmasks[idx.0 - 1].get() } {
-                if iteration % WARN_THRESHOLD == 0 {
-                    warn!(
-                        "alivef not being set for self.index(i={}) = {} (self.lmasks[{}] is {})...",
-                        i,
-                        self.index(i),
-                        idx.0 - 1,
-                        self.lmasks[idx.0 - 1].get()
-                    );
+                    #[cfg(loom)]
+                    loom::thread::yield_now();
                 }
-                iteration += 1;
-
-                #[cfg(loom)]
-                loom::thread::yield_now();
             }
 
             unsafe {
@@ -458,6 +477,34 @@ where
             fetch_max_with_flush(&self.ctail, gtail);
             store_with_flush(&self.ltails[idx.0 - 1], gtail);
         }
+    }
+
+    /// Publishes the entries `[start, start + n)`, which the caller has already
+    /// written back, by advancing the commit tail. Publication happens in log
+    /// order, so first wait for every earlier appender to publish its entries.
+    /// Those appenders have already reserved their entries and wait on nothing
+    /// but earlier appenders, so this cannot deadlock.
+    #[cfg(feature = "scr")]
+    #[inline(always)]
+    fn publish(&self, start: usize, n: usize) {
+        // An empty append (a combiner with no operations) reserved nothing. Its start
+        // may already be behind the commit tail, which only moves forward, so waiting
+        // for equality would never end.
+        if n == 0 {
+            return;
+        }
+        let mut iteration: usize = 1;
+        while self.commit_tail.load(Ordering::Acquire) != start {
+            if iteration % (WARN_THRESHOLD << 16) == 0 {
+                warn!("publish(start={}, n={}) waiting for earlier appenders to publish...", start, n);
+            }
+            iteration += 1;
+            core::hint::spin_loop();
+
+            #[cfg(loom)]
+            loom::thread::yield_now();
+        }
+        self.commit_tail.store(start + n, Ordering::Release);
     }
 
     /// Advances the head of the log forward. If a replica has stopped making
