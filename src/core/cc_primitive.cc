@@ -214,12 +214,17 @@ bool try_allocate_seqlock(seqlock_t* s, bool with_lock) {
     uint32_t curr = s->sequence.load(std::memory_order_relaxed);
     if ((curr & FREE_BIT) == 0 || (curr & LOCK_BIT) != 0) return false;
 
-    // uint32_t new_seq = curr & SEQ_MASK;
-    uint32_t new_seq = 0;  // initialize to 0 instead of keeping old sequence value
+    // Keep counting from the previous sequence instead of restarting at 0: hosts keep the last sequence they read
+    // per record (local seqcount) and skip invalidation when it matches, so a reused record must never come back
+    // with a sequence a host may still hold for the previous object.
+    uint32_t new_seq = curr & SEQ_MASK;
+    if (new_seq & 1) new_seq = (new_seq + 1) & SEQ_MASK;  // make it even
 
     if (with_lock) {
         new_seq = (new_seq + 1) & SEQ_MASK;
         new_seq = new_seq | LOCK_BIT;
+    } else {
+        new_seq = (new_seq + 2) & SEQ_MASK;
     }
     new_seq = new_seq & ~FREE_BIT;  // clear free bit
 
@@ -279,6 +284,8 @@ bool read_seqlock_retry(seqlock_t* s, uint32_t start_seq) {
 #ifdef NO_COHERENCE
     cache_flush(reinterpret_cast<char*>(s), sizeof(*s));
 #endif
+    // order the (non-atomic) reads of the protected data before the re-check of the sequence
+    std::atomic_thread_fence(std::memory_order_acquire);
     uint32_t end_seq = s->sequence.load(std::memory_order_acquire);
 #ifdef DYN_WMETA
     return (start_seq != (end_seq & SEQ_MASK)) || (end_seq & FREE_BIT);

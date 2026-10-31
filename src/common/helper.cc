@@ -97,11 +97,13 @@ __attribute__((target("clflushopt")))
 #endif
 void cache_flush(char* addr, size_t size) {
 #if defined(SCR) || defined(NO_COHERENCE)
-    size_t aligned_size =
-        (size + CACHE_LINE_SIZE - 1) & ~static_cast<size_t>(CACHE_LINE_SIZE - 1);  // Round up to nearest cache line
+    // cover every line touched by [addr, addr + size), also when addr is not line aligned
+    const uintptr_t line_mask = static_cast<uintptr_t>(CACHE_LINE_SIZE - 1);
+    uintptr_t start = reinterpret_cast<uintptr_t>(addr) & ~line_mask;
+    uintptr_t end = reinterpret_cast<uintptr_t>(addr) + size;
     _mm_sfence();  // prevent writes from ordered after this
-    for (size_t offset = 0; offset < aligned_size; offset += CACHE_LINE_SIZE) {
-        _mm_clflushopt(addr + offset);
+    for (uintptr_t line = start; line < end; line += CACHE_LINE_SIZE) {
+        _mm_clflushopt(reinterpret_cast<void*>(line));
     }
     _mm_mfence();  // prevent clflush from getting reordred after this
 #endif
@@ -112,11 +114,13 @@ __attribute__((target("clwb")))
 #endif
 void write_flush(char* addr, size_t size) {
 #if defined(SCR) || defined(NO_COHERENCE)
-    size_t aligned_size =
-        (size + CACHE_LINE_SIZE - 1) & ~static_cast<size_t>(CACHE_LINE_SIZE - 1);  // Round up to nearest cache line
+    // cover every line touched by [addr, addr + size), also when addr is not line aligned
+    const uintptr_t line_mask = static_cast<uintptr_t>(CACHE_LINE_SIZE - 1);
+    uintptr_t start = reinterpret_cast<uintptr_t>(addr) & ~line_mask;
+    uintptr_t end = reinterpret_cast<uintptr_t>(addr) + size;
     _mm_sfence();  // prevent writes from ordered after this
-    for (size_t offset = 0; offset < aligned_size; offset += CACHE_LINE_SIZE) {
-        _mm_clwb(addr + offset);
+    for (uintptr_t line = start; line < end; line += CACHE_LINE_SIZE) {
+        _mm_clwb(reinterpret_cast<void*>(line));
     }
     _mm_mfence();  // prevent clwb from getting reordered after this
 #endif

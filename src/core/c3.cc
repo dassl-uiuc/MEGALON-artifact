@@ -47,13 +47,18 @@ unique_ptr<C3POHandle> C3POHandle::CreateOrMap(
     return make_unique<C3POHandle>(c3po, cxl_nid);
 }
 
+size_t C3POHandle::WmetaSlots(size_t num_slots, size_t logical_scr_size) {
+    size_t perobjmetasize = sizeof(seqlock_t) + sizeof(BlockId) + sizeof(size_t);
+    size_t wmeta_slots = logical_scr_size / perobjmetasize;
+    size_t max_wmeta_slots = static_cast<size_t>((static_cast<uint64_t>(num_slots) * 100) / WMETA_WATERMARK);
+    return std::min(wmeta_slots, max_wmeta_slots);
+}
+
 void C3POHandle::InitSharedMetadata(size_t num_slots,
                                     const std::shared_ptr<common::AllocatableLocalMemoryRegion> &sc_shm_region,
                                     SharedBitmap *bitmap) {
     size_t perobjmetasize = sizeof(seqlock_t) + sizeof(BlockId) + sizeof(size_t);
-    size_t wmeta_slots = c3po_->logical_scr_size_ / perobjmetasize;
-    size_t max_wmeta_slots = static_cast<size_t>((static_cast<uint64_t>(num_slots) * 100) / WMETA_WATERMARK);
-    wmeta_slots = std::min(wmeta_slots, max_wmeta_slots);
+    size_t wmeta_slots = WmetaSlots(num_slots, c3po_->logical_scr_size_);
 
     c3po_->scr_meta_ =
         make_unique<PartitionMetadata>(cxl_nid_, num_slots, wmeta_slots, sc_shm_region, LOGICAL_NODE_NUM);

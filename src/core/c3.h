@@ -106,6 +106,9 @@ public:
     explicit C3POHandle(C3PO *c3po, int cxl_nid) noexcept;
     ~C3POHandle() = default;
 
+    // number of coherence records (wmeta slots) for num_slots objects under a logical SCR budget
+    static size_t WmetaSlots(size_t num_slots, size_t logical_scr_size);
+
     void InitSharedMetadata(size_t num_slots,
                             const std::shared_ptr<common::AllocatableLocalMemoryRegion> &sc_shm_region,
                             SharedBitmap *bitmap);

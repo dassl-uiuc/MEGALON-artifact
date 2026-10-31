@@ -17,7 +17,9 @@ using std::string;
 std::shared_ptr<SharedMemoryObject> SharedMemoryObject::CreateSharedMemoryObject(
     size_t num_pages, const std::shared_ptr<AllocatableLocalMemoryRegion> &sc_shm_region,
     const std::shared_ptr<AllocatableLocalMemoryRegion> &nc_shm_region) {
-    LocalMemoryAllocator<SharedMemoryObject> cache_alloc(nc_shm_region);
+    // the object header (bitmap/slot/page pointers and shared counters) is read and RMW'd by all hosts: keep it
+    // in SCR. The CacheNode array and page data it points to are still allocated from NCR.
+    LocalMemoryAllocator<SharedMemoryObject> cache_alloc(sc_shm_region);
     auto cache = cache_alloc.AllocateAligned<MemoryAlignment::kCacheAlign>();
     std::construct_at(cache, num_pages, sc_shm_region, nc_shm_region);
 

@@ -43,8 +43,13 @@ SharedMemoryObjectHandle<Policy>::SharedMemoryObjectHandle(const int node, const
     sc_shm_region_ = std::make_shared<common::AllocatableLocalMemoryRegion>(node, cfg.GetSCRSize());
     // keep passing this region around to the servers
     nc_shm_region_ = std::make_shared<common::AllocatableLocalMemoryRegion>(node, cfg.GetNCRSize());
+    // In move-to-share mode a wmeta index doubles as the CXL CacheNode/page index, and there can be up to
+    // 1.25 x shared_num_slots wmeta slots: size the CXL arrays to cover every wmeta index.
+    size_t cxl_num_slots = shared_num_slots;
+    if (cfg.GetMoveToShare())
+        cxl_num_slots = std::max(cxl_num_slots, C3POHandle::WmetaSlots(shared_num_slots, cfg.GetLogicalSCRSize()));
     cache_shrd_ptr_ =
-        common::SharedMemoryObject::CreateSharedMemoryObject(shared_num_slots, sc_shm_region_, nc_shm_region_);
+        common::SharedMemoryObject::CreateSharedMemoryObject(cxl_num_slots, sc_shm_region_, nc_shm_region_);
     cache_ = cache_shrd_ptr_.get();
     c3po_ = C3POHandle::CreateOrMap(shared_num_slots, (void *)0x6f0000000000, NUMA_MEM, cache_->GetPageBaseAddr(),
                                     sc_shm_region_, cfg.GetLogicalSCRSize());
@@ -138,14 +143,11 @@ void SharedMemoryObjectHandle<Policy>::StartReplMgr() {
 template <typename Policy>
 size_t SharedMemoryObjectHandle<Policy>::CopyToUserBufferCXL(const ReadHandle &rh, void *ptr, size_t count,
                                                              size_t offset_into_page) {
-    common::CacheNode *cn;
-
     CHECK(rh.from_cxl) << "CacheNode from Local";
 
     if (!cfg_.GetMoveToShare()) {
     } else {
-        cn = cache_shrd_ptr_->cache_slot_.GetCacheNode(rh.cn_index.value());
-        cn->DecreaseEvict();
+        cache_shrd_ptr_->cache_slot_.DecreaseEvict(rh.cn_index.value());
     }
 
     // size_t bytes_read = std::min(count, cn->GetLength());
@@ -666,6 +668,11 @@ retry:
                     } else {
                         LOG(ERROR) << "Error reading from disk: " << std::strerror(errno);
                     }
+#ifndef FULL_COHERENCE
+                    // write the fetched data back to CXL before the slot is published
+                    c3po_->write_flush(reinterpret_cast<char *>(cache_shrd_ptr_->page_data_.GetPage(new_index)),
+                                       slot_size);
+#endif
                 }
 
                 size_t slot_size = static_cast<size_t>(SLOT_SIZE);
@@ -749,6 +756,13 @@ retry:
             case ReadErrno::NO_ERROR:
                 break;
             case ReadErrno::META_OUTDATE:
+                // the failed attempt may already have pulled (now stale) page lines into the cache, and the retry
+                // can take the local-seqcount fast path that skips invalidation: drop them before retrying
+                if (rh.from_cxl && rh.cn_index.has_value()) {
+#ifndef FULL_COHERENCE
+                    cache_flush_data(rh);
+#endif
+                }
                 goto retry;
             case ReadErrno::PAGE_INCOHERENT:
                 if (rh.from_cxl) {
@@ -869,6 +883,13 @@ retry:
             case ReadErrno::NO_ERROR:
                 break;
             case ReadErrno::META_OUTDATE:
+                // the failed attempt may already have pulled (now stale) page lines into the cache, and the retry
+                // can take the local-seqcount fast path that skips invalidation: drop them before retrying
+                if (rh.from_cxl && rh.cn_index.has_value()) {
+#ifndef FULL_COHERENCE
+                    cache_flush_data(rh);
+#endif
+                }
                 goto retry;
             case ReadErrno::PAGE_INCOHERENT:
                 if (rh.from_cxl) {
@@ -995,6 +1016,11 @@ retry:
                     if (result <= 0) {
                         LOG(ERROR) << "Error reading from disk: " << std::strerror(errno);
                     }
+#ifndef FULL_COHERENCE
+                    // write the fetched data back to CXL before the slot is published
+                    c3po_->write_flush(reinterpret_cast<char *>(cache_shrd_ptr_->page_data_.GetPage(new_index)),
+                                       slot_size);
+#endif
                 }
 
                 size_t slot_size = static_cast<size_t>(SLOT_SIZE);
@@ -1526,6 +1552,10 @@ std::optional<size_t> SharedMemoryObjectHandle<Policy>::SharedToPartition(const 
             if (cfg_.GetMoveToShare()) {
                 // copy data back to local slot
                 uint8_t *remote_data = cache_shrd_ptr_->GetPage(lmeta.wmeta_idx_.value());
+#ifndef FULL_COHERENCE
+                // other hosts may have written the shared copy: drop any stale lines before copying it back
+                c3po_->cache_flush(reinterpret_cast<char *>(remote_data), SLOT_SIZE);
+#endif
                 memcpy(reinterpret_cast<void *>(cn_idx), remote_data, SLOT_SIZE);
             }
             c3po_->Scr_meta()->RecycleWmeta(wmeta_idx_optional.value(), target_partition);

@@ -130,7 +130,7 @@ done
 # -------------------------------
 echo ""
 echo "Starting analysis phase..."
-cd benchmarks/scripts
+cd benchmarks/script
 
 for workload in "${WORKLOADS[@]}"; do
     if [ $workload == "zipfian" ]; then
