@@ -20,7 +20,7 @@
 # `numactl -H` first. Output: logs/patch-compare/<eval>/{results.csv,<eval>_before_after.png}.
 #
 # Commits used (override with environment variables):
-#   MEGALON_BEFORE=3be2fa7  MEGALON_AFTER=fix/main  HCMETA_BEFORE=7566c76  HCMETA_AFTER=fix/hcmeta
+#   MEGALON_BEFORE=3be2fa7  MEGALON_AFTER=main  HCMETA_BEFORE=7566c76  HCMETA_AFTER=hcmeta
 
 set -u
 
@@ -41,9 +41,9 @@ while getopts "e:s:p:o:ch" opt; do
 done
 
 MEGALON_BEFORE=${MEGALON_BEFORE:-3be2fa7}
-MEGALON_AFTER=${MEGALON_AFTER:-fix/main}
+MEGALON_AFTER=${MEGALON_AFTER:-main}
 HCMETA_BEFORE=${HCMETA_BEFORE:-7566c76}
-HCMETA_AFTER=${HCMETA_AFTER:-fix/hcmeta}
+HCMETA_AFTER=${HCMETA_AFTER:-hcmeta}
 SIZES=(2400000 4800000 7200000 9600000 12000000 18000000 24000000)
 
 # data points of each experiment, as "w_ratio zipf num_obj scr_mb" (must match the eval scripts)

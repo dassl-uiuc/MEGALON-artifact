@@ -93,7 +93,7 @@ Checkout to `alllog` branch for running experiments corresponding to the `AllLog
 
 ## Coherence Patch
 
-The `fix/main`, `fix/hcmeta` and `fix/alllog` branches fix implementation bugs in how shared state is kept coherent across hosts in the non-coherent CXL region. The paper's trends and claims are unaffected (see below).
+The `main`, `hcmeta` and `alllog` branches each carry one commit, "Fix coherence bugs in shared CXL state", that fixes implementation bugs in how shared state is kept coherent across hosts in the non-coherent CXL region. Its parent is the code used for the paper. The paper's trends and claims are unaffected (see below).
 
 All three branches:
 - **Shared object header in SCR.** The header holding the bitmap pointers and the shared slot counters is now allocated in the SCR instead of the NCR. Each counter sits on its own cache line, and the dirty counter is updated only when the dirty bit actually flips.
@@ -103,14 +103,14 @@ All three branches:
 - **`cache_flush` covers every line of an unaligned range**, including the last one.
 - **File-backed admission writes the fetched data back**, and the evictor invalidates a `CacheNode` before reading its block id.
 
-MEGALON and AllLog (`fix/main`, `fix/alllog`):
+MEGALON and AllLog (`main`, `alllog`):
 - **Shared log entries are fully written back before being published.** An appender writes back its entries (several cache lines each), then publishes them in log order by advancing a committed tail kept in the SCR next to the log tail. Replicas replay only up to the committed tail, which they read without flushing, and invalidate the published entries with a single fence per batch.
 
-AllLog only (`fix/alllog`):
+AllLog only (`alllog`):
 - Links the `scr` NR library, which has the log write-backs and replay invalidations; it previously linked the original NR, which had none.
 - Adds the acquire fence to the GCD seqlock, and declares the missing `ReplicateManager` constructor argument so the branch builds.
 
-HCMeta only (`fix/hcmeta`):
+HCMeta only (`hcmeta`):
 - In HCMeta-local (move-to-share) mode, the CXL slot arrays are sized to cover every coherence-record index, which could previously exceed the number of slots.
 - A reused coherence record continues its sequence number instead of restarting at 0, so stale per-host copies can't match it.
 - The shared copy is invalidated before it is copied back to its partition.
@@ -123,6 +123,6 @@ HCMeta only (`fix/hcmeta`):
 ./scripts/eval/patch_compare.sh -e eval4   # §6.4, Figure 7(b)(ii): MEGALON, HCMeta (~2 h)
 ```
 
-The script runs the experiment's own evaluation script on the original and the patched commits. It writes `logs/patch-compare/<eval>/results.csv` and `logs/patch-compare/<eval>/<eval>_before_after.png`, a before/after plot in the style of the paper's figure. Use `-s` and `-p` to run a subset, and `-c` to re-collect and re-plot existing results without running. HCMeta needs about 50 GB free on NUMA node 0 and 40 GB on each other node (`numactl -H`).
+The script runs the experiment's own evaluation script on the original commits (`3be2fa7` on `main`, `7566c76` on `hcmeta`) and on the patched branches (`main`, `hcmeta`). It writes `logs/patch-compare/<eval>/results.csv` and `logs/patch-compare/<eval>/<eval>_before_after.png`, a before/after plot in the style of the paper's figure. Use `-s` and `-p` to run a subset, and `-c` to re-collect and re-plot existing results without running. HCMeta needs about 50 GB free on NUMA node 0 and 40 GB on each other node (`numactl -H`).
 
-On our machine, MEGALON's throughput changed by +0.4% to +3.5% across all dataset sizes, and both HCMeta variants still collapse once their metadata no longer fits in the SCR.
+On our machine, MEGALON's throughput was unchanged or higher in every configuration we measured (eval 2: +0.4% to +3.5%; eval 3: +1% to +9%; eval 4: +11% to +26%), and HCMeta still collapses once its metadata no longer fits in the SCR.
