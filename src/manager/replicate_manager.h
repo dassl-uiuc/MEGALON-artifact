@@ -41,7 +41,8 @@ class ReplicateManager {
 
 public:
     explicit ReplicateManager(int node, std::shared_ptr<SharedMemoryObject> shrd_cache,
-                              const std::shared_ptr<AllocatableLocalMemoryRegion> &region) noexcept;
+                              const std::shared_ptr<AllocatableLocalMemoryRegion> &region,
+                              bool replication_enabled) noexcept;
 
     virtual ~ReplicateManager() noexcept;
 
@@ -132,6 +133,8 @@ private:
     }
 
     int exec_node_;
+    bool replication_enabled_;
+    std::atomic<bool> replication_suspended_{false};
     std::jthread worker_;
 
     C3POHandle *c3po_;

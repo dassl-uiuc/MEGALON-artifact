@@ -17,6 +17,59 @@ class SharedMemoryObjectHandle;
 
 namespace rackobj::common {
 
+// Clock-style eviction hint: incremented by the evictor, decremented on access.
+class EvictCounter {
+public:
+    explicit EvictCounter(int64_t init = 1) : cnt_(init) {}
+
+    bool ShouldEvict() {
+        int64_t count;
+
+        count = cnt_.load(std::memory_order_relaxed);
+        if (count >= 4) {
+            DLOG(INFO) << "cn evict_cnt: " << static_cast<uint32_t>(count);
+            return true;
+        }
+
+        while (!cnt_.compare_exchange_weak(count, count + 1, std::memory_order_acq_rel)) {
+            if (count >= 4) {
+                DLOG(INFO) << "cn evict_cnt: " << static_cast<uint32_t>(count);
+                return true;
+            }
+        }
+        return count + 1 == 4;
+    }
+
+    bool DecreaseEvict() {
+        int64_t count;
+
+        count = cnt_.load(std::memory_order_relaxed);
+        if (count <= 0) {
+            DLOG(INFO) << "cn evict_cnt: " << static_cast<int64_t>(count);
+            return false;
+        }
+
+        while (!cnt_.compare_exchange_weak(count, count - 1, std::memory_order_acq_rel)) {
+            if (count <= 0) {
+                DLOG(INFO) << "cn evict_cnt: " << static_cast<int64_t>(count);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void ClearEvict() {
+        int64_t count;
+
+        count = cnt_.load(std::memory_order_relaxed);
+        while (!cnt_.compare_exchange_weak(count, 0, std::memory_order_acq_rel))
+            ;
+    }
+
+private:
+    std::atomic<int64_t> cnt_;
+};
+
 class CacheNode {
     friend class SharedMemoryObject;
 
@@ -51,49 +104,13 @@ public:
 
     // void SetCachedServer(uint64_t server_id) { cached_server_id_ = server_id; }
 
-    bool ShouldEvict() {
-        int64_t count;
+    // Only used by LocalCacheNode (local DRAM). Shared CXL CacheNodes keep their eviction hint in
+    // CacheSlot so that per-access updates do not dirty the cache line holding block_id_/length_.
+    bool ShouldEvict() { return evict_cnt_.ShouldEvict(); }
 
-        count = evict_cnt_.load(std::memory_order_relaxed);
-        if (count >= 4) {
-            DLOG(INFO) << "cn evict_cnt: " << static_cast<uint32_t>(count);
-            return true;
-        }
+    bool DecreaseEvict() { return evict_cnt_.DecreaseEvict(); }
 
-        while (!evict_cnt_.compare_exchange_weak(count, count + 1, std::memory_order_acq_rel)) {
-            if (count >= 4) {
-                DLOG(INFO) << "cn evict_cnt: " << static_cast<uint32_t>(count);
-                return true;
-            }
-        }
-        return count + 1 == 4;
-    }
-
-    bool DecreaseEvict() {
-        int64_t count;
-
-        count = evict_cnt_.load(std::memory_order_relaxed);
-        if (count <= 0) {
-            DLOG(INFO) << "cn evict_cnt: " << static_cast<int64_t>(count);
-            return false;
-        }
-
-        while (!evict_cnt_.compare_exchange_weak(count, count - 1, std::memory_order_acq_rel)) {
-            if (count <= 0) {
-                DLOG(INFO) << "cn evict_cnt: " << static_cast<int64_t>(count);
-                return false;
-            }
-        }
-        return true;
-    }
-
-    void ClearEvict() {
-        int64_t count;
-
-        count = evict_cnt_.load(std::memory_order_relaxed);
-        while (!evict_cnt_.compare_exchange_weak(count, 0, std::memory_order_acq_rel))
-            ;
-    }
+    void ClearEvict() { evict_cnt_.ClearEvict(); }
 
     uint8_t GetActiveNode() const { return active_node_.load(std::memory_order_relaxed); }
 
@@ -111,7 +128,7 @@ protected:
     // include any flags in the most significant 4 bits of the field.
     std::atomic<uint16_t> length_;
 
-    std::atomic<int64_t> evict_cnt_;
+    EvictCounter evict_cnt_;
 
     std::atomic<uint8_t> active_node_;
 };

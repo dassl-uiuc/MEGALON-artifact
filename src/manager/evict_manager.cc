@@ -60,7 +60,7 @@ size_t EvictManager<Policy>::DoEvictShared(size_t to_evict
         size_t cn_index = cur->cn_index();
         cn = shared_page_cache_->cache_slot_.GetCacheNode(cn_index);
         /* Skip if cn has referencee or still dirty */
-        if (!cn->ShouldEvict()) {
+        if (!shared_page_cache_->cache_slot_.ShouldEvict(cn_index)) {
             if (cur == local_page_list_->GetListTail()) {
                 // hit list tail
                 DLOG(INFO) << "EvictManager::DoEvictLocal hit tail @" << cur;
@@ -72,6 +72,12 @@ size_t EvictManager<Policy>::DoEvictShared(size_t to_evict
             continue;
         }
         local_page_list_->UnlockList();
+
+#ifndef FULL_COHERENCE
+        // the CacheNode lives in the NCR and may have been rewritten by another host: invalidate it before
+        // reading block_id_
+        cache_flush(reinterpret_cast<char *>(cn), sizeof(CacheNode));
+#endif
 
         // if page_cache.bitmap[cn_index].is_dirty():
         //    skip this cn
@@ -131,7 +137,7 @@ size_t EvictManager<Policy>::DoEvictShared(size_t to_evict
                 case NrGcdDeleteError::NR_GCD_DELETE_ENTRY_NOEXIST:
                     // Entry does not exist in GCD
                     LOG(FATAL) << "BUG: EvictManager::DoEvictShared entry @" << cn << "does not exist in GCD";
-                    cn->ClearEvict();
+                    shared_page_cache_->cache_slot_.ClearEvict(cn_index);
                     local_page_list_->LockList();
                     cur = local_page_list_->NextListNodeLocked(cur);
                     continue;  // skip this node
@@ -154,7 +160,7 @@ size_t EvictManager<Policy>::DoEvictShared(size_t to_evict
 
         cn->SetLength(0);
         cn->Reinitialize(BlockId());
-        cn->ClearEvict();
+        shared_page_cache_->cache_slot_.ClearEvict(cn_index);
         // repl_mgr_->ClearReplicate(cn_index);
 
         /* acquire free list lock outside of ll_lock

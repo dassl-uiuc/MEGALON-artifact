@@ -34,6 +34,19 @@ pub unsafe fn flush_cache_line(ptr: *const u8) {
     asm!("clflushopt [{}]", in(reg) ptr, options(nostack, preserves_flags));
 }
 
+/// Flushes every cache line spanned by `*ptr`; `ptr` must be cache-line aligned
+/// (e.g. a log `Entry`, which is `repr(align(64))`). Callers fence as needed.
+#[cfg(any(feature = "scr", feature = "no-coherence"))]
+#[inline(always)]
+pub unsafe fn flush_object<T>(ptr: *const T) {
+    let base = ptr as *const u8;
+    let mut off = 0;
+    while off < size_of::<T>() {
+        flush_cache_line(base.add(off));
+        off += 64;
+    }
+}
+
 #[cfg(feature = "no-coherence")]
 #[inline(always)]
 pub fn load_with_flush(input: &CachePadded<AtomicUsize>) -> usize {
@@ -218,6 +231,13 @@ where
     /// all replicas registered against this log.
     pub(crate) ctail: CachePadded<AtomicUsize>,
 
+    /// Index <= tail below which every entry is published, i.e. written back to
+    /// memory and safe to replay. Appenders advance it in log order after writing
+    /// back their entries; replicas replay up to it. Like tail, it lives in the
+    /// coherent region (SCR), so replicas read it without flushing and never touch
+    /// the non-coherent lines of entries that are still being written.
+    pub(crate) commit_tail: CachePadded<AtomicUsize>,
+
     /// Array consisting of the local tail of each replica registered with the log.
     /// Required for garbage collection; since replicas make progress over the log
     /// independently, we want to make sure that we don't garbage collect operations
@@ -321,6 +341,7 @@ where
                 head: CachePadded::new(AtomicUsize::new(0usize)),
                 tail: CachePadded::new(AtomicUsize::new(0usize)),
                 ctail: CachePadded::new(AtomicUsize::new(0usize)),
+                commit_tail: CachePadded::new(AtomicUsize::new(0usize)),
                 ltails: [LTAIL_DEFAULT; MAX_REPLICAS_PER_LOG],
                 next: CachePadded::new(AtomicUsize::new(1usize)),
                 lmasks: [LMASK_DEFAULT; MAX_REPLICAS_PER_LOG],
@@ -338,6 +359,7 @@ where
                 head: CachePadded::new(AtomicUsize::new(0usize)),
                 tail: CachePadded::new(AtomicUsize::new(0usize)),
                 ctail: CachePadded::new(AtomicUsize::new(0usize)),
+                commit_tail: CachePadded::new(AtomicUsize::new(0usize)),
                 ltails: arr![CachePadded::new(AtomicUsize::new(0)); 3], // MAX_REPLICAS_PER_LOG
                 next: CachePadded::new(AtomicUsize::new(1usize)),
                 lmasks: [LMASK_DEFAULT; MAX_REPLICAS_PER_LOG],

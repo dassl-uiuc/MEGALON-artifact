@@ -138,8 +138,10 @@ elseif (NO_COHERENCE)
     message("linking no-coherence nr variant")
     target_link_libraries(megalon nr_hashmap_noco hwloc)
 else()
-    message("linking original nr variant")
-    target_link_libraries(megalon nr_hashmap_orig hwloc)
+    # AllLog keeps the shared log in non-coherent CXL memory like MEGALON, so it needs the
+    # log-entry write-backs/invalidations of the scr variant (the original NR has none)
+    message("linking scr nr variant")
+    target_link_libraries(megalon nr_hashmap hwloc)
 endif()
 
 # find_library(oneTBB megalon ${CMAKE_CURRENT_BINARY_DIR})

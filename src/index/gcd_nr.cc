@@ -312,6 +312,8 @@ size_t GlobalCacheDirectoryHandleNr::ReadSeqStart(const BlockId& block_id, const
 
 bool GlobalCacheDirectoryHandleNr::ReadSeqRetry(const BlockId& block_id, const NrFfi::NrMeta* nr_meta,
                                                 size_t saved_seq) {
+    // order the (non-atomic) reads of the protected data before the re-check of the sequence
+    std::atomic_thread_fence(std::memory_order_acquire);
     ssize_t cur = NrFfi::GetSeqCount(nr_meta, block_id);
     if (cur == -1) return true;  // entry gone: treat as retry
     return static_cast<size_t>(cur) != saved_seq;

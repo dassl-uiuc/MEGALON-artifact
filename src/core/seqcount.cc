@@ -333,6 +333,8 @@ bool read_seqlock_retry(seqlock_t* s, uint32_t start_seq) {
 #ifdef NO_COHERENCE
     cache_flush(reinterpret_cast<char*>(s), sizeof(*s));
 #endif
+    // order the (non-atomic) reads of the protected data before the re-check of the sequence
+    std::atomic_thread_fence(std::memory_order_acquire);
     uint32_t end_seq = s->sequence.load(std::memory_order_acquire);
 #ifdef DYN_WMETA
     return (start_seq != (end_seq & SEQ_MASK)) || (end_seq & FREE_BIT);

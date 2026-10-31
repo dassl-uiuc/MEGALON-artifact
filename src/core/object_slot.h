@@ -94,11 +94,12 @@ public:
     uint8_t *GetPageBaseAddr() const { return page_data_.GetPageBaseAddr(); }
 
 protected:
-    SharedBitmap scr_bitmap_;  // resides on SCR
+    // this object itself is allocated on SCR (see CreateSharedMemoryObject)
+    SharedBitmap scr_bitmap_;  // bitmaps on SCR
 
-    CacheSlot cache_slot_;  // resides on NCR
+    CacheSlot cache_slot_;  // CacheNode array on NCR
 
-    PageData page_data_;  // resides on NCR
+    PageData page_data_;  // page data on NCR
 };
 
 template <typename Policy>
